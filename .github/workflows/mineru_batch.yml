@@ -9,6 +9,7 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
+  # ── arXiv 论文（按分类矩阵）──
   batch:
     runs-on: ubuntu-latest
     strategy:
@@ -16,19 +17,16 @@ jobs:
       matrix:
         category: [cs.CL, cs.AI, cs.LG, cs.CV]
         days: [1]
-        max: [250]               # 每 job 250 篇（6h 上限内安全）
+        max: [250]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install deps
         run: pip install requests
-
       - name: Fetch arXiv papers
         run: |
           mkdir -p logs output
@@ -37,21 +35,14 @@ jobs:
             --days ${{ matrix.days }} \
             --max ${{ matrix.max }} \
             --out logs/batch_${{ matrix.category }}.json
-        env:
-          # 拉取失败不阻断（arXiv API 偶发）
-          PYTHONUNBUFFERED: "1"
-
       - name: Batch parse via token pool
         run: |
           python scripts/mineru_api_pool.py \
             --url-file logs/batch_${{ matrix.category }}_urls.txt \
             --out-dir output/${{ matrix.category }} \
-            --rate 40 \
-            --submit-workers 8 \
-            --download-workers 8
+            --rate 40 --submit-workers 8 --download-workers 8
         env:
           MINERU_TOKENS: ${{ secrets.MINERU_TOKENS }}
-
       - name: Sync results to GitHub (auto new repos)
         run: |
           python scripts/github_sync.py \
@@ -59,11 +50,11 @@ jobs:
             --prefix "mineru-${{ matrix.category }}" \
             --gh-token "${{ secrets.GH_TOKEN }}" \
             --index-repo "mineru-index" \
+            --index-out "logs/index_${{ matrix.category }}.json" \
             --max-bytes 500000000
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-
-      - name: Upload logs (diagnose on failure)
+      - name: Upload logs + index
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -71,11 +62,80 @@ jobs:
           path: logs/
           retention-days: 7
 
-  # ── API 保活（若部署了 Render/HF 常驻 API）──
-  keepalive:
-    needs: batch
-    if: false   # 部署 API 后改为 true
+  # ── 学术会议论文（CVPR/ICML/NeurIPS/AAAI/ACL）──
+  conference:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        venue: [icml2024, cvpr2024, neurips2024, aaai2024, acl2024]
+        max: [200]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install requests
+      - name: Fetch conference papers
+        run: |
+          mkdir -p logs output
+          python scripts/conference_fetcher.py \
+            --venue ${{ matrix.venue }} \
+            --max ${{ matrix.max }} \
+            --out logs/conf_${{ matrix.venue }}.json
+      - name: Batch parse via token pool
+        run: |
+          python scripts/mineru_api_pool.py \
+            --url-file logs/conf_${{ matrix.venue }}_urls.txt \
+            --out-dir output/${{ matrix.venue }} \
+            --rate 40 --submit-workers 8 --download-workers 8
+        env:
+          MINERU_TOKENS: ${{ secrets.MINERU_TOKENS }}
+      - name: Sync results to GitHub (auto new repos)
+        run: |
+          python scripts/github_sync.py \
+            --dir output/${{ matrix.venue }} \
+            --prefix "mineru-${{ matrix.venue }}" \
+            --gh-token "${{ secrets.GH_TOKEN }}" \
+            --index-repo "mineru-index" \
+            --index-out "logs/index_${{ matrix.venue }}.json" \
+            --max-bytes 500000000
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Upload logs + index
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.venue }}
+          path: logs/
+          retention-days: 7
+
+  # ── 总厂库：汇总所有索引 → 导航 + 全量目录 ──
+  hub:
+    needs: [batch, conference]
     runs-on: ubuntu-latest
     steps:
-      - name: Ping API
-        run: curl -sS -o /dev/null -w "%{http_code}" https://YOUR-SVC.onrender.com/health
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download all indexes
+        uses: actions/download-artifact@v4
+        with:
+          path: _artifacts
+      - name: Merge indexes and update hub
+        run: |
+          mkdir -p merged
+          find _artifacts -name 'index_*.json' -exec cp {} merged/ \;
+          ls merged/ | head
+          python scripts/hub_update.py \
+            --index-dir merged \
+            --hub-repo paper-hub \
+            --gh-token "${{ secrets.GH_TOKEN }}"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
