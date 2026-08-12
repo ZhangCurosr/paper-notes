@@ -62,6 +62,7 @@ COOLDOWN_429 = 30        # token 触发 429 后的冷却秒数
 SUSPEND_60018 = 3600     # 日配额耗尽暂停秒数
 POLL_MIN_DELAY = 8       # 提交后至少等 N 秒再首查（避免无谓轮询）
 POLL_FAIL_SKIP = 30      # 轮询连续失败 3 次后暂停 N 秒
+POLL_INTERVAL = 8        # 无候选任务时的轮询休眠间隔（秒）
 QUOTA_CHECK_SEC = 60     # quota 检查间隔
 STATE_SAVE_SEC = 20      # state.json 定期保存间隔
 
