@@ -1,0 +1,18 @@
+# 运行时数据（禁止入库）
+__pycache__/
+*.pyc
+logs/
+mineru_output/
+mineru_server_data/
+*.log
+
+# 真实凭据（禁止入库）
+*.csv
+!.mineru_secret.example
+.mineru_secret
+token.json
+client_secret.json
+API_KEYS.md
+
+# 临时脚本
+scripts/_*_tmp.py
