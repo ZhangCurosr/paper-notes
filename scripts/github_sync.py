@@ -95,7 +95,7 @@ def push_batch(repo, owner, token, files, subdir, dry_run=False):
            "GIT_TERMINAL_PROMPT": "0"}
     try:
         if repo_exists(repo, token):
-            run(f"git clone --depth 1 https://x-access-token:{token}@github.com/{owner}/{repo}.git {tmp}",
+            run(f"git clone --depth 1 https://oauth2:{token}@github.com/{owner}/{repo}.git {tmp}",
                 env=env, check=False)
             if not os.path.exists(os.path.join(tmp, ".git")):
                 os.makedirs(tmp, exist_ok=True)
@@ -195,13 +195,16 @@ def main():
         idx_path = os.path.join(tmp, "index.json")
         old = []
         if repo_exists(args.index_repo, args.gh_token):
-            run(f"git clone --depth 1 https://x-access-token:{args.gh_token}@github.com/{owner}/{args.index_repo}.git {tmp}", env=env, check=False)
+            run(f"git clone --depth 1 https://oauth2:{args.gh_token}@github.com/{owner}/{args.index_repo}.git {tmp}", env=env, check=False)
             if os.path.exists(os.path.join(tmp, "index.json")):
                 try:
                     with open(os.path.join(tmp, "index.json"), encoding="utf-8") as f:
                         old = json.load(f)
                 except Exception:
                     pass
+        else:
+            os.makedirs(tmp, exist_ok=True)
+            run(f"git init -b main {tmp}", env=env)
         old.extend(index_rows)
         with open(idx_path, "w", encoding="utf-8") as f:
             json.dump(old, f, ensure_ascii=False, indent=1)
