@@ -95,7 +95,7 @@ def push_batch(repo, owner, token, files, subdir, dry_run=False):
            "GIT_TERMINAL_PROMPT": "0"}
     try:
         if repo_exists(repo, token):
-            run(f"git clone --depth 1 https://oauth2:{token}@github.com/{owner}/{repo}.git {tmp}",
+            run(f"git clone --depth 1 https://x-access-token:{token}@github.com/{owner}/{repo}.git {tmp}",
                 env=env, check=False)
             if not os.path.exists(os.path.join(tmp, ".git")):
                 os.makedirs(tmp, exist_ok=True)
@@ -132,6 +132,7 @@ def main():
     ap.add_argument("--owner", help="GitHub 用户名（缺省从 token 推断）")
     ap.add_argument("--index-repo", default="", help="索引仓库名（记录 url→路径 映射，可空=不建）")
     ap.add_argument("--max-bytes", type=int, default=MAX_BYTES_DEFAULT, help="单仓容量阈值")
+    ap.add_argument("--index-out", help="把本次同步索引同时写入本地文件（供总厂库 hub 汇总）")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划")
     args = ap.parse_args()
 
@@ -195,16 +196,13 @@ def main():
         idx_path = os.path.join(tmp, "index.json")
         old = []
         if repo_exists(args.index_repo, args.gh_token):
-            run(f"git clone --depth 1 https://oauth2:{args.gh_token}@github.com/{owner}/{args.index_repo}.git {tmp}", env=env, check=False)
+            run(f"git clone --depth 1 https://x-access-token:{args.gh_token}@github.com/{owner}/{args.index_repo}.git {tmp}", env=env, check=False)
             if os.path.exists(os.path.join(tmp, "index.json")):
                 try:
                     with open(os.path.join(tmp, "index.json"), encoding="utf-8") as f:
                         old = json.load(f)
                 except Exception:
                     pass
-        else:
-            os.makedirs(tmp, exist_ok=True)
-            run(f"git init -b main {tmp}", env=env)
         old.extend(index_rows)
         with open(idx_path, "w", encoding="utf-8") as f:
             json.dump(old, f, ensure_ascii=False, indent=1)
@@ -217,6 +215,14 @@ def main():
         else:
             run(f"gh repo create {owner}/{args.index_repo} --public --source={tmp} --push", env=env)
         print(f"✅ 索引更新 {len(index_rows)} 条 → {owner}/{args.index_repo}")
+
+    # 本地索引输出（供总厂库汇总）
+    if args.index_out and index_rows:
+        import os
+        os.makedirs(os.path.dirname(args.index_out) or ".", exist_ok=True)
+        with open(args.index_out, "w", encoding="utf-8") as f:
+            json.dump(index_rows, f, ensure_ascii=False, indent=1)
+        print(f"✅ 本地索引 {len(index_rows)} 条 → {args.index_out}")
 
 
 if __name__ == "__main__":
