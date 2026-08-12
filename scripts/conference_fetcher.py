@@ -11,7 +11,7 @@
   - cvpr{YYYY}    openaccess.thecvf.com/CVPR{YYYY}
   - neurips{YYYY} proceedings.neurips.cc/paper_files/paper/{YYYY}
   - aaai{YYYY}    ojs.aaai.org（OJS 两层：archive → issue TOC）
-  - acl{YYYY}     aclanthology.org/events/acl-{YYYY}/（pdf = 论文页 + .pdf）
+  - acl{YYYY}     aclanthology.org/events/acl-{YYYY}/（acl/emnlp/naacl/coling 同族）
 
 用法：
   python scripts/conference_fetcher.py --venue icml2024 --max 200 --out logs/conf_icml2024.json
@@ -178,15 +178,18 @@ def fetch_aaai(year, max_n):
             "published": str(year),
         })
     return papers
-def fetch_acl(year, max_n):
-    base = f"https://aclanthology.org/events/acl-{year}/"
+def fetch_acl(venue, year, max_n):
+    """aclanthology 全家族：acl/emnlp/naacl/coling（pdf 直链规则统一）"""
+    base = f"https://aclanthology.org/events/{venue}-{year}/"
     page = http_get(base)
-    # 论文页：2024.acl-long.123 / 2024.acl-short.45 ...
-    pids = list(dict.fromkeys(links(page, r'(\d{4}\.acl-(?:long|short|findings)\.[^"\']+)')))
+    # id 模式：2024.acl-long.5 / 2024.emnlp-main.5 / 2024.findings-acl.5 ...
+    pat = rf'(\d{{4}}\.(?:{venue}-(?:main|long|short)|findings-{venue})\.\d+)'
+    pids = list(dict.fromkeys(links(page, pat)))
     papers = []
     for pid in pids[:max_n]:
         papers.append({
-            "title": pid, "authors": [], "year": year, "venue": f"ACL {year}",
+            "title": pid, "authors": [], "year": year,
+            "venue": f"{venue.upper()} {year}",
             "abs_url": f"https://aclanthology.org/{pid}/",
             "pdf_url": f"https://aclanthology.org/{pid}.pdf",
             "published": str(year),
@@ -195,7 +198,11 @@ def fetch_acl(year, max_n):
 
 
 FETCHERS = {"icml": fetch_icml, "cvpr": fetch_cvpr,
-            "neurips": fetch_neurips, "aaai": fetch_aaai, "acl": fetch_acl}
+            "neurips": fetch_neurips, "aaai": fetch_aaai,
+            "acl": lambda y, n: fetch_acl("acl", y, n),
+            "emnlp": lambda y, n: fetch_acl("emnlp", y, n),
+            "naacl": lambda y, n: fetch_acl("naacl", y, n),
+            "coling": lambda y, n: fetch_acl("coling", y, n)}
 
 
 def main():
