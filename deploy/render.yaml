@@ -1,0 +1,17 @@
+# Render 部署配置（免费 Web Service）
+# 使用：https://render.com → New → Blueprint（连接本仓库）或 New Web Service 指到 deploy/Dockerfile
+services:
+  - type: web
+    name: mineru-api
+    runtime: docker
+    repo: https://github.com/YOUR-USER/YOUR-REPO.git
+    dockerfilePath: ./deploy/Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8900
+      # MinerU tokens（逗号分隔）——在 Render 面板设置，勿写入仓库
+      - key: MINERU_TOKENS
+        sync: false
+      # 产物输出目录挂载提示：免费层磁盘非持久，重要数据由 GitHub Actions 定期同步
+    healthCheckPath: /health

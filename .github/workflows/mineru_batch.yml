@@ -1,0 +1,80 @@
+name: MinerU Daily Batch
+
+on:
+  schedule:
+    - cron: '0 2,14 * * *'      # 每天 02:00 / 14:00 UTC（自动）
+  workflow_dispatch: {}          # 手动触发
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        category: [cs.CL, cs.AI, cs.LG, cs.CV]
+        days: [1]
+        max: [250]               # 每 job 250 篇（6h 上限内安全）
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Fetch arXiv papers
+        run: |
+          python scripts/arxiv_fetcher.py \
+            --category ${{ matrix.category }} \
+            --days ${{ matrix.days }} \
+            --max ${{ matrix.max }} \
+            --out logs/batch_${{ matrix.category }}.json
+        env:
+          # 拉取失败不阻断（arXiv API 偶发）
+          PYTHONUNBUFFERED: "1"
+
+      - name: Batch parse via token pool
+        run: |
+          python scripts/mineru_api_pool.py \
+            --url-file logs/batch_${{ matrix.category }}_urls.txt \
+            --out-dir output/${{ matrix.category }} \
+            --rate 40 \
+            --submit-workers 8 \
+            --download-workers 8
+        env:
+          MINERU_TOKENS: ${{ secrets.MINERU_TOKENS }}
+
+      - name: Sync results to GitHub (auto new repos)
+        run: |
+          python scripts/github_sync.py \
+            --dir output/${{ matrix.category }} \
+            --prefix "mineru-${{ matrix.category }}" \
+            --gh-token "${{ secrets.GH_TOKEN }}" \
+            --index-repo "mineru-index" \
+            --max-bytes 500000000
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Upload logs (diagnose on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.category }}
+          path: logs/
+          retention-days: 7
+
+  # ── API 保活（若部署了 Render/HF 常驻 API）──
+  keepalive:
+    needs: batch
+    if: false   # 部署 API 后改为 true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API
+        run: curl -sS -o /dev/null -w "%{http_code}" https://YOUR-SVC.onrender.com/health

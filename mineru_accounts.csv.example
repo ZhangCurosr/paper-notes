@@ -1,0 +1,2 @@
+username,email,phone,api_key,password,created_at,expires_at
+ctfexample,ctfexample@example.com,13100000000,sk-REPLACE_WITH_REAL_TOKEN,REPLACE_WITH_PASSWORD,2026-01-01 00:00:00,2026-04-01 00:00:00
