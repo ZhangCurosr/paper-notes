@@ -68,7 +68,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        venue: [icml2024, cvpr2024, neurips2024, aaai2024, acl2024]
+        # 仅保留 MinerU 服务器可达源（实测：mlr.press/neurips.cc/ojs.aaai 被拒）
+        venue: [acl2024, emnlp2024, naacl2024, cvpr2024, cvpr2023]
         max: [200]
     steps:
       - name: Checkout
@@ -116,6 +117,7 @@ jobs:
   # ── 总厂库：汇总所有索引 → 导航 + 全量目录 ──
   hub:
     needs: [batch, conference]
+    if: always()          # 部分源失败也更新总厂库（跳过缺失索引）
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
