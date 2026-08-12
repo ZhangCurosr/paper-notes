@@ -196,7 +196,7 @@ def main():
         idx_path = os.path.join(tmp, "index.json")
         old = []
         if repo_exists(args.index_repo, args.gh_token):
-            run(f"git clone --depth 1 https://x-access-token:{args.gh_token}@github.com/{owner}/{args.index_repo}.git {tmp}", env=env, check=False)
+            run(f"git clone --depth 1 https://oauth2:{args.gh_token}@github.com/{owner}/{args.index_repo}.git {tmp}", env=env, check=False)
             if os.path.exists(os.path.join(tmp, "index.json")):
                 try:
                     with open(os.path.join(tmp, "index.json"), encoding="utf-8") as f:
@@ -218,7 +218,6 @@ def main():
 
     # 本地索引输出（供总厂库汇总）
     if args.index_out and index_rows:
-        import os
         os.makedirs(os.path.dirname(args.index_out) or ".", exist_ok=True)
         with open(args.index_out, "w", encoding="utf-8") as f:
             json.dump(index_rows, f, ensure_ascii=False, indent=1)
