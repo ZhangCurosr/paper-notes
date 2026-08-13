@@ -266,6 +266,32 @@ td.src{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
 .empty{color:var(--dim);padding:22px;text-align:center;font-size:13px}
 .dim{color:var(--dim);font-size:12px}
 .foot{color:var(--dim2);font-size:11.5px;text-align:center;margin:26px 0 8px}
+/* 告警横幅 */
+#alerts{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.alert{display:flex;align-items:center;gap:10px;padding:11px 16px;border-radius:12px;font-size:13px;
+  border:1px solid;animation:slidein .25s ease}
+.alert.bad{background:rgba(242,99,123,.12);border-color:rgba(242,99,123,.5);color:var(--bad)}
+.alert.warn{background:rgba(245,185,77,.12);border-color:rgba(245,185,77,.5);color:var(--warn)}
+@keyframes slidein{from{transform:translateY(-6px);opacity:0}}
+/* KPI 顶部分色条 + 数字动画 */
+.kpi::before{content:"";position:absolute;top:0;left:14px;right:14px;height:3px;border-radius:0 0 4px 4px;
+  background:linear-gradient(90deg,var(--acc),var(--purple));opacity:0;transition:.2s}
+.kpi:hover::before{opacity:1}
+.kpi.good::before{background:linear-gradient(90deg,var(--ok),#34d399)}
+.kpi.warn::before{background:linear-gradient(90deg,var(--warn),#f58a4d)}
+.kpi.bad::before{background:linear-gradient(90deg,var(--bad),#d94a62)}
+.kpi .v .num{font-variant-numeric:tabular-nums}
+/* 间隔选择 */
+select{background:var(--bg2);border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:7px 8px;font-size:12.5px;outline:none;cursor:pointer}
+select:hover{border-color:var(--acc)}
+/* token 行可点 */
+#toktbl tbody tr{cursor:pointer}
+/* 弹窗操作按钮 */
+.mbody .ops{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.mbody .ops .iconbtn{padding:6px 12px;font-size:12.5px}
+.iconbtn.danger:hover{border-color:var(--bad);color:var(--bad)}
+.iconbtn.copied{border-color:var(--ok);color:var(--ok)}
+.kv .mono{font-family:Consolas,monospace;font-size:12px;background:var(--bg2);border-radius:5px;padding:1px 6px}
 </style>
 </head>
 <body>
@@ -278,10 +304,17 @@ td.src{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
     <span class="pill" id="svc"><span class="dot"></span>连接中…</span>
     <span class="pill" id="clock" title="下次自动刷新">—</span>
     <span class="spacer"></span>
+    <select id="interval" title="刷新间隔">
+      <option value="5">5s</option><option value="15" selected>15s</option>
+      <option value="30">30s</option><option value="60">60s</option>
+    </select>
     <button class="iconbtn" id="themeBtn" title="切换明暗主题">🌓</button>
     <button class="iconbtn" id="autoBtn" title="自动刷新开关">⏸</button>
     <button class="iconbtn" id="refBtn" onclick="refreshAll()">⟳ 刷新</button>
   </div>
+
+  <!-- 告警横幅 -->
+  <div id="alerts"></div>
 
   <!-- KPI -->
   <div class="kpis" id="kpis"></div>
@@ -363,6 +396,7 @@ td.src{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
 
 <script>
 let tokData=[], tasks=[], tokSort={k:'success_rate',asc:false}, statusF='', taskQ='';
+let curTask=null, curTokList=[];
 const BASE='/api';
 
 const $=id=>document.getElementById(id);
@@ -397,25 +431,36 @@ async function refreshAll(){
 }
 
 /* ── 概览 ── */
+function animNum(el,to,dec,unit){
+  if(el==null) return; if(to==null||isNaN(to)){ el.textContent='-'; return; }
+  const from=parseFloat(el.dataset.v||'0'); if(isNaN(from))from=0; el.dataset.v=to;
+  const t0=performance.now(), dur=450;
+  function step(t){ const p=Math.min(1,(t-t0)/dur), v=from+(to-from)*(1-Math.pow(1-p,3));
+    el.textContent=(dec!=null?v.toFixed(dec):Math.round(v).toLocaleString())+(unit||'');
+    if(p<1) requestAnimationFrame(step); }
+  requestAnimationFrame(step);
+}
 function renderOverview(ov){
   const d=ov.data||{}, tk=d.tokens||{}, q=tk.daily||{};
   const up=d.uptime;
   const s=$('svc');
-  if(up==null){ s.innerHTML='<span class="dot bad"></span>云端不可达'; }
-  else{ s.innerHTML=`<span class="dot ok"></span>在线 ${Math.floor(up/3600)}h ${Math.floor(up%3600/60)}m · ${tk.strategy} · ${tk.tokens} token · v${ov.version}`; }
+  if(up==null){ s.innerHTML='<span class="dot bad"></span>云端不可达'; document.title='⚠ MinerU Dashboard 离线'; }
+  else{ s.innerHTML=`<span class="dot ok"></span>在线 ${Math.floor(up/3600)}h ${Math.floor(up%3600/60)}m · ${tk.strategy} · ${tk.tokens} token · v${ov.version}`;
+    document.title='MinerU Dashboard · 在线'; }
   const pct=tk.pages_parsed||0, err=tk.err||0, ok=tk.ok||0, sr=tk.avg_success_rate;
   const cards=[
-    ['提交成功',fmtNum(ok),'good','✅'],['提交失败',fmtNum(err),err>0?'bad':'','❌'],
-    ['成功率',sr==null?'-':(sr*100).toFixed(1)+'%','good','🎯'],
-    ['解析页数',fmtNum(pct),'','📄'],['延迟 p99',tk.latency_ms?.p99!=null?tk.latency_ms.p99+'ms':'-','','⚡'],
-    ['熔断中',fmtNum(tk.banned_now),tk.banned_now>0?'bad':'','🧯'],
-    ['配额暂停',fmtNum(tk.suspended_now),tk.suspended_now>0?'warn':'','⏸'],
-    ['429 冷却',fmtNum(tk.cooling),'','🌡'],
-    ['今日提交',fmtNum(q.submits),'','📥'],
-    ['剩余文件',fmtNum(q.files_left),q.files_left<500?'warn':'','🗂'],
-    ['flash 任务',fmtNum(d.flash?.tasks),'','🪄'],
-    ['API 请求',fmtNum(d.stats?.api_requests),'','🔁']];
-  $('kpis').innerHTML=cards.map(c=>`<div class="kpi ${c[2]}"><div class="k">${c[3]} ${c[0]}</div><div class="v">${esc(c[1])}</div><div class="ic">${c[3]}</div></div>`).join('');
+    ['提交成功',ok,0,'good','✅'],['提交失败',err,0,err>0?'bad':'','❌'],
+    ['成功率',sr,sr!=null?1:null,'good','🎯'],
+    ['解析页数',pct,0,'','📄'],['延迟 p99',tk.latency_ms?.p99,tk.latency_ms?.p99!=null?0:null,'','⚡'],
+    ['熔断中',tk.banned_now,0,tk.banned_now>0?'bad':'','🧯'],
+    ['配额暂停',tk.suspended_now,0,tk.suspended_now>0?'warn':'','⏸'],
+    ['429 冷却',tk.cooling,0,'','🌡'],
+    ['今日提交',q.submits,0,'','📥'],
+    ['剩余文件',q.files_left,0,q.files_left<500?'warn':'','🗂'],
+    ['flash 任务',d.flash?.tasks,0,'','🪄'],
+    ['API 请求',d.stats?.api_requests,0,'','🔁']];
+  $('kpis').innerHTML=cards.map((c,i)=>`<div class="kpi ${c[3]}" id="kpi${i}"><div class="k">${c[4]} ${c[0]}</div><div class="v"><span class="num" id="knum${i}">0</span></div><div class="ic">${c[4]}</div></div>`).join('');
+  cards.forEach((c,i)=>animNum($('knum'+i), c[1], c[2], c[0]==='成功率'?'%':c[0].includes('延迟')?'ms':''));
   // 配额条
   const fl=q.files_limit||5000, pl=q.pages_priority_limit||1000;
   const p1=Math.min(100,100*q.submits/fl), p2=Math.min(100,100*q.pages/pl);
@@ -425,6 +470,19 @@ function renderOverview(ov){
   f1.className='fill'+(p1>85?' bad':p1>70?' warn':''); f2.className='fill'+(p2>85?' bad':p2>70?' warn':'');
   $('poolinfo').textContent=`preflight ${JSON.stringify(tk.preflight||{})} · err_dist ${JSON.stringify(tk.err_dist||{})}`;
   $('daytotal').textContent='今日任务 '+fmtNum(d.stats?.tasks_total);
+  checkAlerts(ov);
+}
+
+/* ── 告警横幅 ── */
+function checkAlerts(ov){
+  const d=ov.data||{}, tk=d.tokens||{}, q=tk.daily||{}, pre=tk.preflight||{};
+  const alerts=[];
+  if(d.uptime==null) alerts.push(['bad','⚠ 云端服务不可达，请检查 Render 状态或网络']);
+  if(tk.banned_now>0) alerts.push(['bad','🧯 '+tk.banned_now+' 个 token 熔断中（连续失败，自动恢复中）']);
+  if(pre.bad>0) alerts.push(['bad','🚫 '+pre.bad+' 个 token 预热探测失败（无效 token，建议从台账替换）']);
+  if(q.files_left!=null&&q.files_left<200) alerts.push(['warn','🗂 今日文件配额剩余不足 200（'+q.files_left+'），注意耗尽']);
+  if(tk.suspended_now>tk.tokens*0.05) alerts.push(['warn','⏸ '+tk.suspended_now+' 个 token 配额暂停中（超过 5%，12h 自动恢复）']);
+  $('alerts').innerHTML=alerts.map(a=>`<div class="alert ${a[0]}">${a[1]}</div>`).join('');
 }
 
 /* ── 趋势图（悬停提示） ── */
@@ -487,21 +545,43 @@ function renderTokens(d){ tokData=(d.data?.tokens||[]).slice(); renderTokBody();
 function renderTokBody(){
   const q=$('tokSearch').value.toLowerCase();
   const list=tokData.filter(t=>t.token.toLowerCase().includes(q)||tokStatus(t)[0].includes(q));
+  curTokList=list;
   const map={token:0,status:0}; const {k,asc}=tokSort;
   list.sort((a,b)=>{ if(k==='status'){const x=tokStatus(a)[0].localeCompare(tokStatus(b)[0]);return asc?x:-x;}
     const av=a[k],bv=b[k]; if(typeof av==='string'){const x=av.localeCompare(bv);return asc?x:-x;}
     return asc?((av||0)-(bv||0)):((bv||0)-(av||0)); });
   const tb=$('toktbl tbody');
   if(!list.length){tb.innerHTML='<tr><td colspan="10" class="empty">无匹配 token</td></tr>';return;}
-  tb.innerHTML=list.map(t=>{
+  tb.innerHTML=list.map((t,i)=>{
     const[s,cl]=tokStatus(t),sr=t.success_rate*100;
     const srb=sr>=95?'':sr>=70?'warn':'bad';
-    return `<tr><td><span class="tag ${cl}">${s}</span></td><td>${esc(t.token)}</td>
+    return `<tr onclick="openTok(${i})" title="点击查看详情"><td><span class="tag ${cl}">${s}</span></td><td>${esc(t.token)}</td>
       <td><span class="srbar"><i class="${srb}" style="width:${sr}%"></i></span>${sr.toFixed(0)}%</td>
       <td>${fmtNum(t.ok)}</td><td>${fmtNum(t.err)}</td><td>${fmtNum(t.rate_limited)}</td>
       <td>${t.latency_ms??'-'}</td>
       <td>${t.preflight===true?'<span class="tag active">ok</span>':t.preflight===false?'<span class="tag bad">bad</span>':'<span class="tag skip">skip</span>'}</td>
       <td>${fmtNum(t.files_left)}</td><td>${fmtNum(t.daily_submits)}</td></tr>`;}).join('');
+}
+
+/* ── Token 详情弹窗 ── */
+function openTok(i){
+  const t=curTokList[i]; if(!t){toast('数据未加载',true);return;}
+  const[s,cl]=tokStatus(t);
+  $('mTitle').textContent='Token 详情 · '+t.token;
+  $('mBody').innerHTML=`<dl class="kv">
+    <dt>状态</dt><dd><span class="tag ${cl}">${s}</span> ${t.quota_warn?'<span class="tag suspended">配额预警</span>':''}</dd>
+    <dt>成功率</dt><dd>${(t.success_rate*100).toFixed(1)}%</dd>
+    <dt>提交</dt><dd>成功 <b>${t.ok}</b> / 失败 <b>${t.err}</b> / 总请求 ${t.total_requests}</dd>
+    <dt>错误细分</dt><dd>429×${t.rate_limited} · 配额暂停×${t.suspended} · 服务端×${t.server_error} · 解析 ${t.parse_ok}✓/${t.parse_fail}✗</dd>
+    <dt>延迟</dt><dd>EMA <b>${t.latency_ms??'-'}ms</b> · p50 ${t.latency_p50??'-'} · p90 ${t.latency_p90??'-'} · p99 ${t.latency_p99??'-'}</dd>
+    <dt>错误码</dt><dd class="mono">${esc(JSON.stringify(t.err_codes||{}))}</dd>
+    <dt>最近错误</dt><dd class="dim">${esc(t.last_err||'-')}</dd>
+    <dt>连续失败</dt><dd>${t.fail_streak}（阈值熔断=${t.ban_active?'已熔断':'否'}）</dd>
+    <dt>最近使用</dt><dd>${relTime(t.last_used)} 前</dd>
+    <dt>今日</dt><dd>提交 ${t.daily_submits} · 页 ${t.daily_pages} · 剩余文件 ${t.files_left} / 优先页 ${t.pages_priority_left}</dd>
+    <dt>预热探测</dt><dd>${t.preflight===true?'通过':t.preflight===false?'失败':'未测'}</dd>
+    <dt>窗口样本</dt><dd>${t.window_len}</dd></dl>`;
+  $('modal').classList.add('show');
 }
 
 /* ── 任务 ── */
@@ -532,12 +612,18 @@ function renderTasksLocal(){
 async function openTask(tid){
   try{ const d=await api('/task/'+tid);
     if(d.code!==0){ toast('任务不存在或无权访问',true); return; }
-    const t=d.data||{};
+    const t=d.data||{}; curTask=t;
     $('mTitle').textContent=tid;
-    $('mBody').innerHTML=`<dl class="kv">
+    const ops=`<div class="ops">
+      <button class="iconbtn" onclick="copyText(curTask.task_id,'已复制 task_id')">📋 复制 task_id</button>
+      <button class="iconbtn" onclick="copyText(curTask.source||'','已复制来源 URL')">📋 复制来源</button>
+      ${t.status==='failed'?`<button class="iconbtn" onclick="doRetry('${tid}')">↻ 重试任务</button>`:''}
+      <button class="iconbtn danger" onclick="doDelete('${tid}')">🗑 删除任务</button>
+    </div>`;
+    $('mBody').innerHTML=ops+`<dl class="kv">
       <dt>状态</dt><dd><span class="tag ${t.status}">${esc(t.status)}</span> <span class="dim">通道 ${esc(t.channel||'-')}</span></dd>
       <dt>来源</dt><dd>${esc(t.source||'-')}</dd>
-      <dt>batch_id</dt><dd class="dim">${esc(t.batch_id||'-')}</dd>
+      <dt>batch_id</dt><dd class="mono">${esc(t.batch_id||'-')}</dd>
       <dt>创建时间</dt><dd>${t.created_at?new Date(t.created_at*1000).toLocaleString():'-'}</dd>
       <dt>完成时间</dt><dd>${t.finished_at?new Date(t.finished_at*1000).toLocaleString():'-'}</dd>
       <dt>进度</dt><dd>${esc(JSON.stringify(t.progress||null))}</dd>
@@ -545,6 +631,22 @@ async function openTask(tid){
       <dt>错误</dt><dd class="dim">${esc(t.error||'-')}</dd></dl>`;
     $('modal').classList.add('show');
   }catch(e){toast('详情加载失败',true);}
+}
+async function copyText(txt,msg){
+  try{ await navigator.clipboard.writeText(txt); toast(msg||'已复制'); }
+  catch(e){ toast('复制失败（浏览器限制），请手动复制',true); }
+}
+async function doRetry(tid){
+  if(!confirm('确认重试任务 '+tid+' ？')) return;
+  const r=await fetch('/api/retry/'+tid,{method:'POST'}).then(x=>x.json());
+  toast(r.code===0?'已重置为 pending，等待重新提交':'重试失败: '+(r.msg||''), r.code!==0);
+  closeModal(); refreshAll();
+}
+async function doDelete(tid){
+  if(!confirm('确认删除任务 '+tid+' ？（记录与产物将不可恢复）')) return;
+  const r=await fetch('/api/task/'+tid,{method:'DELETE'}).then(x=>x.json());
+  toast(r.code===0?'已删除 '+tid:'删除失败: '+(r.msg||''), r.code!==0);
+  closeModal(); refreshAll();
 }
 function closeModal(){$('modal').classList.remove('show');}
 
@@ -565,7 +667,8 @@ function exportCSV(data,name){
   URL.revokeObjectURL(a.href);toast('已导出 '+name+'.csv');
 }
 
-setInterval(()=>{ if(auto&&--left<=0){left=15;refreshAll();} $('clock').textContent='⏱ '+left+'s'; },1000);
+setInterval(()=>{ if(auto&&--left<=0){left=+$('interval').value;refreshAll();} $('clock').textContent='⏱ '+left+'s'; },1000);
+$('interval').onchange=()=>{ left=+$('interval').value; $('clock').textContent='⏱ '+left+'s'; toast('刷新间隔已设为 '+$('interval').value+'s'); };
 refreshAll();
 </script>
 </body>
@@ -634,6 +737,20 @@ def make_handler(client, cfg):
             if path == "/api/refresh":
                 client.refresh()
                 return self._json({"code": 0})
+            self._json({"code": 404, "msg": "not found"}, 404)
+
+        def do_POST(self):
+            path = self.path.split("?")[0]
+            if path.startswith("/api/retry/"):
+                tid = path[len("/api/retry/"):]
+                return self._json(client.call("POST", f"/v1/tasks/{tid}/retry"))
+            self._json({"code": 404, "msg": "not found"}, 404)
+
+        def do_DELETE(self):
+            path = self.path.split("?")[0]
+            if path.startswith("/api/task/"):
+                tid = path[len("/api/task/"):]
+                return self._json(client.call("DELETE", f"/v1/tasks/{tid}"))
             self._json({"code": 404, "msg": "not found"}, 404)
     return Handler
 
