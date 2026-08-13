@@ -169,7 +169,10 @@ class ServerState:
         self.flash_window = deque()  # flash 通道滑动窗口（IP 限频）
         self.dl_pool = ThreadPoolExecutor(max_workers=opts.download_workers)
         self.tokens = mpool.load_tokens(opts)
-        self.pool = mpool.TokenPool(self.tokens, opts.rate)
+        self.pool = mpool.TokenPool(self.tokens, opts.rate,
+                                    strategy=getattr(opts, "strategy", "rr"),
+                                    ban_threshold=getattr(opts, "ban_threshold", 5),
+                                    health_interval=getattr(opts, "health_interval", 300))
         self.running = True
         self.started_at = time.time()
         self.dl_futures = {}      # task_id -> future
@@ -1074,6 +1077,15 @@ def main():
     ap.add_argument("--out-dir", default=mpool.DEFAULT_OUT, help="产物输出目录")
     # token 池参数
     ap.add_argument("--rate", type=int, default=40, help="token 池每 token 每分钟提交数")
+    ap.add_argument("--strategy", choices=["rr", "weighted", "score"],
+                    default=os.environ.get("MINERU_STRATEGY", "rr"),
+                    help="调度策略：rr=轮转 / weighted=平滑加权轮询 / score=成功率+延迟健康度（可设 MINERU_STRATEGY）")
+    ap.add_argument("--ban-threshold", type=int,
+                    default=int(os.environ.get("MINERU_BAN_THRESHOLD", "5") or 5),
+                    help="连续失败熔断阈值（达阈值指数退避禁用，健康检查自动恢复）")
+    ap.add_argument("--health-interval", type=int,
+                    default=int(os.environ.get("MINERU_HEALTH_INTERVAL", "300") or 300),
+                    help="健康检查间隔秒（0=关闭）")
     ap.add_argument("--model", choices=["pipeline", "vlm", "html"], default="pipeline")
     ap.add_argument("--formula", action="store_true")
     ap.add_argument("--table", action="store_true")
