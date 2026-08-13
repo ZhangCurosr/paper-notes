@@ -46,9 +46,12 @@ import argparse
 import base64
 import faulthandler
 import io
+import ipaddress
 import json
 import os
+import re
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -66,6 +69,83 @@ DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 FLASH_BASE = "https://mineru.net/api/v1/agent"
 FLASH_MAX_SIZE = 10 * 1024 * 1024   # flash 通道文件上限 10MB
 VERSION = "2.0"
+
+# ─────────────────────────── 安全工具（SSRF / 路径穿越防护） ───────────────────────────
+
+SAFE_SCHEMES = ("https", "http")
+SAFE_UPLOAD_EXTS = (".pdf", ".docx", ".doc", ".ppt", ".pptx", ".xls", ".xlsx",
+                    ".png", ".jpg", ".jpeg", ".webp", ".md", ".txt", ".csv", ".html")
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024   # 单文件上传上限 100MB（与 _read_body 一致）
+MAX_URL_LEN = 2048                    # URL 长度上限
+_PRIVATE_NETS = None
+
+
+def _private_networks():
+    """内网/环回/链路本地/云元数据/保留段（惰性初始化）"""
+    global _PRIVATE_NETS
+    if _PRIVATE_NETS is None:
+        _PRIVATE_NETS = [ipaddress.ip_network(n) for n in (
+            "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+            "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+            "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
+            "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32")]
+    return _PRIVATE_NETS
+
+
+def is_safe_url(url):
+    """SSRF 防护：scheme 白名单 + 非内网字面量 + DNS 解析后 IP 非内网/保留段
+    任一环节不确定 → 拒绝（防绕过优先）"""
+    from urllib.parse import urlparse
+    if not url or not isinstance(url, str) or len(url) > MAX_URL_LEN:
+        return False
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    if p.scheme not in SAFE_SCHEMES or not p.hostname:
+        return False
+    host = p.hostname.lower().rstrip(".")
+    if not host:
+        return False
+    # 字面量黑名单：本机/内网惯用名/云元数据
+    if host in ("localhost", "localhost.localdomain") or host.endswith((".local", ".internal", ".lan")):
+        return False
+    if "metadata" in host or host in ("169.254.169.254",):
+        return False
+    # IP 字面量直接检查；域名解析后检查所有解析结果
+    try:
+        ips = set(socket.gethostbyname_ex(host)[2])
+    except Exception:
+        return False   # DNS 解析失败 → 拒绝（防绕过）
+    for ip in ips:
+        try:
+            a = ipaddress.ip_address(ip)
+            if a.is_private or a.is_loopback or a.is_link_local or a.is_reserved or a.is_multicast:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def safe_join(base, name):
+    """防路径穿越：name 必须解析在 base 目录内，否则返回 None"""
+    if not name:
+        return None
+    try:
+        base_r = os.path.realpath(base)
+        fp = os.path.realpath(os.path.join(base_r, name))
+        if fp != base_r and not fp.startswith(base_r + os.sep):
+            return None
+        return fp
+    except Exception:
+        return None
+
+
+def safe_filename(s):
+    """下载响应头文件名 sanitize（去路径/引号/换行）"""
+    s = os.path.basename(str(s).replace("\\", "/"))
+    return re.sub(r'[\\/"\r\n\x00]', "_", s)[:120]
+
 
 # ─────────────────────────── Flash 通道（免 token） ───────────────────────────
 
@@ -171,6 +251,8 @@ class ServerState:
         self.running = True
         self.started_at = time.time()
         self.stop_event = threading.Event()   # ★ 后台线程停止信号（健康检查等）
+        self.auth_fail_ip = {}    # ip -> deque 鉴权失败时间戳
+        self.auth_fail_ban = {}   # ip -> 封禁截止时间
         self.dl_futures = {}      # task_id -> future
         self.tokens = mpool.load_tokens(opts)
         self.pool = mpool.TokenPool(self.tokens, opts.rate,
@@ -276,6 +358,23 @@ class ServerState:
                     return False, f"请求过于频繁（限 {self.key_rate}/分钟）"
                 dq.append(now)
             return True, "ok"
+
+    # ── 鉴权爆破防护：同 IP 60s 内失败 ≥10 次 → 封禁 10 分钟 ──
+    def ip_allowed(self, ip):
+        with self.lock:
+            return self.auth_fail_ban.get(ip, 0) <= time.time()
+
+    def note_auth_fail(self, ip):
+        with self.lock:
+            now = time.time()
+            dq = self.auth_fail_ip.setdefault(ip, deque())
+            while dq and now - dq[0] > 60:
+                dq.popleft()
+            dq.append(now)
+            if len(dq) >= 10:
+                self.auth_fail_ban[ip] = now + 600
+                self.auth_fail_ip.pop(ip, None)
+                log_info(f"[鉴权封禁] {ip} 60s 内鉴权失败 10 次，封禁 10 分钟")
 
     # ── flash 通道限速 ──
     def flash_acquire(self):
@@ -584,7 +683,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(http_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # ★ CORS 默认关闭（API 面向服务端/CLI 调用）；--cors 显式开启
+        if getattr(self.st, "opts", None) and getattr(self.st.opts, "cors", False):
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -598,21 +699,38 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _auth(self, need_admin=False, count=True):
+        ip = self.client_address[0] if self.client_address else "?"
+        # ★ 鉴权爆破防护：封禁中的 IP 直接拒绝
+        if not self.st.ip_allowed(ip):
+            return None, "IP 已临时封禁（鉴权失败过多），10 分钟后恢复"
         h = self.headers.get("Authorization", "")
         if not h.startswith("Bearer "):
+            self.st.note_auth_fail(ip)
             return None, "缺少 Authorization: Bearer <key>"
         key = h[7:].strip()
         ok, msg = self.st.check_key(key, need_admin, count)
-        return (key if ok else None), msg
+        if not ok:
+            self.st.note_auth_fail(ip)
+            return None, msg
+        return key, msg
 
     def _read_body(self, max_size=100 * 1024 * 1024):
-        ln = int(self.headers.get("Content-Length", 0))
+        try:
+            ln = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            return None, "Content-Length 非法"
         if ln > max_size:
             return None, f"请求体过大（>{max_size // 1024 // 1024}MB）"
         return self.rfile.read(ln), None
 
     def log_message(self, fmt, *args):
-        pass
+        # ★ 审计日志：仅记录非 2xx 响应（含客户端 IP）
+        try:
+            if args and str(args[0]) not in ("200", "301", "302", "304"):
+                ip = self.client_address[0] if self.client_address else "?"
+                log_info(f"[HTTP {args[0]}] {self.command} {self.path[:100]} from {ip}")
+        except Exception:
+            pass
 
     # ── 路由 ──
     def do_GET(self):
@@ -644,7 +762,9 @@ class Handler(BaseHTTPRequestHandler):
                                                   "GET /v1/tasks/{id}/zip",
                                                   "POST /v1/tasks/{id}/retry",
                                                   "POST /v1/crawl", "GET /v1/me",
-                                                  "POST /v1/keys", "GET /v1/stats"]})
+                                                  "POST /v1/keys", "GET /v1/stats",
+                                                  "GET /v1/stats/tokens", "GET /v1/stats/trends",
+                                                  "GET /v1/metrics"]})
             else:
                 self._send_json(404, "not found", 404)
         except BrokenPipeError:
@@ -707,8 +827,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(401, msg, 401)
         from urllib.parse import parse_qs, urlparse
         q = parse_qs(urlparse(self.path).query)
-        limit = int(q.get("limit", ["50"])[0])
-        offset = int(q.get("offset", ["0"])[0])
+        try:
+            limit = min(max(int(q.get("limit", ["50"])[0]), 1), 200)
+            offset = max(int(q.get("offset", ["0"])[0]), 0)
+        except ValueError:
+            return self._send_json(400, "limit/offset 必须为数字", 400)
         status_f = q.get("status", [None])[0]
         with self.st.lock:
             ids = sorted(self.st.user_tasks.get(key, set()))
@@ -749,6 +872,9 @@ class Handler(BaseHTTPRequestHandler):
                 u = str(u).strip()
                 if not u:
                     continue
+                # ★ SSRF 防护：仅允许公网 http/https，内网/元数据/保留段拒绝
+                if not is_safe_url(u):
+                    return None, f"URL 不合法或被拒绝（仅允许公网 http/https）: {u[:80]}"
                 if not fresh:
                     old = self.st.find_done_url(key, u)
                     if old:
@@ -765,8 +891,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.st.stats["by_model"][task_model or self.st.opts.model] += 1
                 ids.append(ut.task_id)
             for f in files:
-                name = str(f.get("name", "file.bin"))
+                name = str(f.get("name", "file.bin")).strip()
+                # ★ 路径穿越防护：拒绝含路径分隔符的名字 + 扩展名白名单
+                if not name or "/" in name or "\\" in name or name in (".", ".."):
+                    return None, f"文件名不合法（不能包含路径）: {name[:60]}"
+                if not name.lower().endswith(SAFE_UPLOAD_EXTS):
+                    return None, f"文件名不合法（仅允许 {SAFE_UPLOAD_EXTS}）: {name[:60]}"
                 data = base64.b64decode(f.get("data", ""))
+                # ★ 文件大小限制
+                if len(data) > MAX_UPLOAD_SIZE:
+                    return None, f"文件过大（>{MAX_UPLOAD_SIZE // 1024 // 1024}MB）: {name[:40]}"
                 local = os.path.join(self.st.data_dir, "uploads", key[:8], name)
                 os.makedirs(os.path.dirname(local), exist_ok=True)
                 with open(local, "wb") as fp:
@@ -896,6 +1030,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(0, out)
 
     def _route_zip(self, ut):
+        # ★ 产物打包上限（防内存打爆）
+        total = sum(os.path.getsize(os.path.join(r, fn))
+                    for r, _, fns in os.walk(ut.out_dir) for fn in fns)
+        if total > 1024 * 1024 * 1024:
+            return self._send_json(400, "产物过大（>1GB），请按文件逐个下载", 400)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for root, _, fns in os.walk(ut.out_dir):
@@ -905,15 +1044,18 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(buf.getvalue(), "application/zip", f"{ut.task_id}_result.zip")
 
     def _route_file(self, ut, name):
-        fp = os.path.join(ut.out_dir, name) if ut.out_dir else None
-        if not fp or not os.path.exists(fp) or not os.path.isfile(fp):
+        # ★ 路径穿越防护：name 必须解析在产物目录内
+        if not ut.out_dir or not name:
+            return self._send_json(404, "文件不存在", 404)
+        fp = safe_join(ut.out_dir, name)
+        if not fp or not os.path.isfile(fp):
             return self._send_json(404, "文件不存在", 404)
         with open(fp, "rb") as f:
             data = f.read()
         ctype = "image/jpeg" if name.lower().endswith((".jpg", ".jpeg")) else \
                 "text/markdown; charset=utf-8" if name.endswith(".md") else \
                 "application/octet-stream"
-        self._send_bytes(data, ctype, os.path.basename(name))
+        self._send_bytes(data, ctype, safe_filename(name))
 
     # ── /v1/crawl（网页转 md）──
     def _route_crawl(self):
@@ -1128,6 +1270,8 @@ def main():
                     help="管理员 key（缺省自动生成并保存；可设 MINERU_ADMIN_KEY 环境变量）")
     ap.add_argument("--tokens", help="逗号分隔 token（缺省读 MINERU_TOKENS 环境变量 / mineru_accounts.csv）")
     ap.add_argument("--key-rate", type=int, default=60, help="每用户 key 每分钟请求上限")
+    ap.add_argument("--cors", action="store_true",
+                    help="开启 CORS（默认关闭；仅浏览器直连调试时需要）")
     ap.add_argument("--out-dir", default=mpool.DEFAULT_OUT, help="产物输出目录")
     # token 池参数
     ap.add_argument("--rate", type=int, default=40, help="token 池每 token 每分钟提交数")
@@ -1155,6 +1299,9 @@ def main():
                     help="flash 通道每分钟提交上限（IP 级限频，保守值）")
     args = ap.parse_args()
     args.flash = not args.no_flash
+    # ★ admin key 强度检查
+    if args.admin_key and len(args.admin_key) < 16:
+        log_info("警告: admin key 过短（<16 字符），建议使用随机长 key")
     # server 的 --tokens 是逗号分隔列表（与 pool CLI 的文件路径语义区分）
     if args.tokens:
         tl = [t.strip() for t in args.tokens.split(",") if t.strip()]
