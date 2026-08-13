@@ -29,24 +29,41 @@ import urllib.request
 import urllib.error
 
 DEFAULT_BASE = "http://127.0.0.1:8900"
+# Render 免费层前置 Cloudflare Bot Fight Mode：对非浏览器流量随机拦截（404/400）
+# 实测 requests 风格 UA 通过率最高，配合自动重试兜底
+DEFAULT_UA = "python-requests/2.32.3 (mineru-api-client)"
+RETRY_CODES = (400, 404, 429, 500, 502, 503, 504)
 
 
-def api(base, key, method, path, body=None, timeout=60):
-    """通用请求：返回 (data_dict, http_status)"""
-    req = urllib.request.Request(base + path, method=method)
-    req.add_header("Authorization", "Bearer " + key)
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode()
-        req.add_header("Content-Type", "application/json")
-    try:
-        resp = urllib.request.urlopen(req, data=data, timeout=timeout)
-        return json.loads(resp.read()), resp.status
-    except urllib.error.HTTPError as e:
+def api(base, key, method, path, body=None, timeout=60, retries=5):
+    """通用请求：自动重试（Cloudflare 随机拦截兜底），返回 (data_dict, http_status)"""
+    last = (None, 0)
+    for attempt in range(retries):
+        req = urllib.request.Request(base + path, method=method)
+        req.add_header("Authorization", "Bearer " + key)
+        req.add_header("User-Agent", DEFAULT_UA)
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            req.add_header("Content-Type", "application/json")
         try:
-            return json.loads(e.read()), e.code
+            resp = urllib.request.urlopen(req, data=data, timeout=timeout)
+            return json.loads(resp.read()), resp.status
+        except urllib.error.HTTPError as e:
+            try:
+                last = (json.loads(e.read()), e.code)
+            except Exception:
+                last = ({"code": e.code, "msg": str(e)}, e.code)
+            if e.code in RETRY_CODES and attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))   # 指数退避
+                continue
+            return last
         except Exception:
-            return {"code": e.code, "msg": str(e)}, e.code
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+    return last
 
 
 def wait_and_fetch(args, ids, base, key):
