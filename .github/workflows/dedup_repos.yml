@@ -1,0 +1,30 @@
+name: Dedup Repos
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dedup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run dedup
+        run: |
+          python scripts/dedup_repos.py
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Upload dedup index
+        uses: actions/upload-artifact@v4
+        with:
+          name: dedup-index
+          path: work/hub_index.json
+          retention-days: 7
