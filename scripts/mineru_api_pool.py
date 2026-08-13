@@ -60,7 +60,7 @@ _MODEL_MAP = {"pipeline": "pipeline", "vlm": "vlm", "html": "MinerU-HTML"}
 WINDOW_SEC = 60          # 限流滑动窗口（服务端 ~50/min，客户端按 rate 保守执行）
 MAX_ATTEMPTS = 6         # 单任务提交最大尝试次数（429 换 token 重试）
 COOLDOWN_429 = 30        # token 触发 429 后的冷却秒数
-SUSPEND_60018 = 3600     # 日配额耗尽暂停秒数
+SUSPEND_60018 = 12 * 3600   # 日配额耗尽暂停秒数（12h，跨日自动恢复；1h 恢复仍会耗尽）
 POLL_MIN_DELAY = 8       # 提交后至少等 N 秒再首查（避免无谓轮询）
 POLL_FAIL_SKIP = 30      # 轮询连续失败 3 次后暂停 N 秒
 POLL_INTERVAL = 8        # 无候选任务时的轮询休眠间隔（秒）
@@ -527,10 +527,11 @@ def submit_task(pool, task, args):
     to = task.task_opts or {}   # ★ 任务级参数优先，缺省回退服务端默认
     # ★ 模型名映射（SDK 实测：html → MinerU-HTML，直接传 html 会报错）
     model_name = task.model or args.model
-    model_version = _MODEL_MAP.get(model_name, model_name)
     payload = {"files": [{"url": task.source} if task.kind == "url"
-                         else {"name": os.path.basename(task.local_path)}],
-               "model_version": model_version}
+                         else {"name": os.path.basename(task.local_path)}]}
+    # ★ 默认 mineru 模型不传 model_version（新注册账号不支持 version 字段 -10002；官方默认即最新模型）
+    if model_name != "mineru":
+        payload["model_version"] = _MODEL_MAP.get(model_name, model_name)
     # ★ 单文件参数（page_ranges/is_ocr/data_id）
     if task.extra:
         payload["files"][0].update(task.extra)
@@ -607,6 +608,12 @@ def submit_task(pool, task, args):
             task.finished_at = time.time()
             return False
         except (KeyError, ValueError, RuntimeError) as e:
+            em = str(e)
+            # ★ 日配额耗尽类业务错误（HTTP 200 + code -60018 等）→ 暂停该 token 并换下一个重试
+            if any(k in em for k in ("daily limit", "limit reached", "quota")):
+                pool.mark_suspend(slot)
+                log(f"  [配额] token {slot.token[:10]}... {em[:60]} → 暂停 12h，换 token 重试")
+                continue
             pool.mark_err(slot)
             log(f"  [错误] {task.source[:60]}: {str(e)[:80]}")
             task.status = "failed"
