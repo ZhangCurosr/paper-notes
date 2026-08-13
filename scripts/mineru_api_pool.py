@@ -98,7 +98,7 @@ def log(*args):
 # ─────────────────────────── Token 池（线程安全） ───────────────────────────
 
 class TokenSlot:
-    """单个 token 的限流状态 + 细粒度使用统计"""
+    """单个 token 的限流状态 + 健康度（new-api 风格：熔断/成功率/延迟）+ 细粒度统计"""
 
     def __init__(self, token):
         self.token = token
@@ -108,6 +108,15 @@ class TokenSlot:
         self.ok_count = 0              # 提交成功
         self.err_count = 0             # 提交失败
         self.last_429_at = 0.0
+        # ★ new-api 风格健康度
+        self.weight = 1.0              # 权重（加权策略用，默认均等）
+        self.current_weight = 0.0      # 平滑加权轮询（SWRR）累计值
+        self.fail_streak = 0           # 连续失败次数（熔断依据）
+        self.ban_until = 0.0           # 熔断截止（指数退避）
+        self.success_win = deque(maxlen=20)   # 最近 20 次成败窗口（成功率）
+        self.latency_ema = None        # 提交延迟 EMA（毫秒，指数平滑）
+        self.last_err = ""             # 最近一次失败原因
+        self.auth_fail = 0             # 鉴权失败次数（401/403 → 永久禁用）
         # ★ 细粒度统计
         self.last_used = 0.0           # 最近一次提交时间
         self.total_requests = 0        # 总提交请求数（含失败重试）
@@ -127,6 +136,8 @@ class TokenSlot:
         if time.time() < self.cooldown_until:
             return False
         if time.time() < self.suspend_until:
+            return False
+        if time.time() < self.ban_until:      # ★ 熔断中不可用
             return False
         # ★ 每日文件配额：接近上限（留 BUFFER 余量）即停用该 token
         if self.files_left() <= QUOTA_FILE_BUFFER:
@@ -148,6 +159,36 @@ class TokenSlot:
         self.suspend_until = time.time() + SUSPEND_60018
         self.err_count += 1
         self.suspended += 1
+
+    # ── new-api 风格健康度 ──
+    def on_success(self, latency=None):
+        """提交成功：清零连败、更新延迟 EMA"""
+        self.fail_streak = 0
+        if latency is not None:
+            self.latency_ema = latency if self.latency_ema is None \
+                else self.latency_ema * 0.8 + latency * 0.2
+
+    def on_fail(self, err=""):
+        """普通失败：连败 +1（达阈值由池触发熔断）"""
+        self.fail_streak += 1
+        self.err_count += 1
+        self.last_err = err[:80]
+
+    def on_ban(self, backoff):
+        """熔断：指数退避禁用"""
+        self.ban_until = time.time() + backoff
+
+    def on_auth_fail(self):
+        """鉴权失败：无效 key，长期禁用（30 天，人工换 key 后重启生效）"""
+        self.auth_fail += 1
+        self.ban_until = time.time() + 30 * 24 * 3600
+        self.err_count += 1
+
+    @property
+    def success_rate(self):
+        if not self.success_win:
+            return 1.0
+        return sum(self.success_win) / len(self.success_win)
 
     # ── 每日配额 ──
     def _roll_daily(self):
@@ -197,6 +238,11 @@ class TokenSlot:
                 "last_used": self.last_used,
                 "cooling": time.time() < self.cooldown_until,
                 "suspend_active": time.time() < self.suspend_until,
+                "ban_active": time.time() < self.ban_until,
+                "fail_streak": self.fail_streak,
+                "success_rate": round(self.success_rate, 3),
+                "latency_ms": int(self.latency_ema) if self.latency_ema else None,
+                "last_err": self.last_err,
                 "window_len": len(self.window),
                 # ★ 每日配额
                 "daily_date": self.daily_date,
@@ -208,20 +254,91 @@ class TokenSlot:
 
 
 class TokenPool:
-    """round-robin 选择可用 token（多线程安全）；全部不可用时阻塞等待"""
+    """new-api 风格 token 调度池：策略选择（rr/weighted/score）+ 熔断 + 健康检查
 
-    def __init__(self, tokens, rate):
+    - rr：轮转（默认，兼容旧行为）
+    - weighted：平滑加权轮询（SWRR，均匀分配且天然防热点）
+    - score：成功率 × 权重 + 低延迟 健康度感知
+    """
+
+    def __init__(self, tokens, rate, strategy="rr", ban_threshold=5, health_interval=300):
         self.slots = [TokenSlot(t) for t in tokens]
-        self.slots_by_token = {s.token: s for s in self.slots}   # token → slot 索引
+        self.slots_by_token = {s.token: s for s in self.slots}   # token → slot
         self.rate = rate
         self.rate_scale = 1.0           # 自适应降速系数
         self.lock = threading.RLock()
-        self._rr = 0   # ★ round-robin 指针（实例级：每次 acquire 从上次位置继续，避免永远选中 slots[0]）   # ★ RLock：stats() 锁内调 effective_rate 需可重入
+        self._rr = 0   # ★ round-robin 指针（实例级：每次 acquire 从上次位置继续，避免永远选中 slots[0]）
+        self.strategy = strategy        # rr | weighted | score
+        self.ban_threshold = ban_threshold   # 连续失败熔断阈值
+        self.health_interval = health_interval   # 健康检查间隔（秒，0=关闭）
         self.last_429_total = 0
         self.total_pages_parsed = 0     # 全池累计解析页数
 
+    # ── new-api 风格：统一成败上报（成败窗口 + 分类处置）──
+    def mark_result(self, slot, ok, latency=None, err_type=None, err_msg=""):
+        """统一成败上报。err_type：quota=配额耗尽 / auth=鉴权失败 / network=网络或5xx / business=业务错误
+        429 走 mark_429（冷却不熔断）；解析失败走 mark_parse（内容问题不熔断）"""
+        with self.lock:
+            slot.total_requests += 1
+            slot.last_used = time.time()
+            slot.success_win.append(1 if ok else 0)
+            if ok:
+                slot.ok_count += 1
+                slot.on_success(latency)
+                slot.mark_submit()   # ★ 每日文件配额入账
+            else:
+                slot.on_fail(err_msg)
+                if err_type == "quota":
+                    slot.on_suspend()
+                    log(f"  [配额] token {slot.token[:10]}... {err_msg[:50]} → 暂停 {SUSPEND_60018 // 3600}h")
+                elif err_type == "auth":
+                    slot.on_auth_fail()
+                    log(f"  [鉴权] token {slot.token[:10]}... {err_msg[:50]} → 长期禁用（无效 key）")
+                elif err_type == "network":
+                    slot.server_error += 1
+                    self._maybe_ban(slot)
+                elif err_type == "business":
+                    self._maybe_ban(slot)
+
+    def _maybe_ban(self, slot):
+        """连续失败达阈值 → 指数退避熔断（60s→120s→240s→…→1h 封顶）"""
+        if slot.fail_streak >= self.ban_threshold:
+            backoff = min(3600, 60 * (2 ** min(slot.fail_streak - self.ban_threshold + 1, 6)))
+            slot.on_ban(backoff)
+            log(f"  [熔断] token {slot.token[:10]}... 连续失败 {slot.fail_streak} 次，禁用 {backoff}s")
+
+    # ── 健康检查：定期对熔断/暂停中的 token 测活（GET /quota 轻量，不耗配额）──
+    def start_health_check(self, stop):
+        if self.health_interval <= 0:
+            return
+        threading.Thread(target=self._health_loop, args=(stop,), daemon=True).start()
+
+    def _health_loop(self, stop):
+        while not stop.wait(self.health_interval):
+            now = time.time()
+            with self.lock:
+                targets = [s for s in self.slots if s.ban_until > now or s.suspend_until > now]
+            for s in targets:
+                try:
+                    api_get("/quota", s.token, timeout=10)
+                    with self.lock:
+                        # quota 接口可过鉴权 → key 有效，解除熔断（配额类靠 12h 到期自动恢复）
+                        if s.ban_until > now and s.auth_fail == 0:
+                            s.ban_until = 0.0
+                            s.fail_streak = 0
+                            log(f"  [健康检查] token {s.token[:10]}... 恢复可用")
+                except RateLimited:
+                    pass
+                except requests.HTTPError as e:
+                    if e.response.status_code in (401, 403):
+                        with self.lock:
+                            s.on_auth_fail()
+                        log(f"  [健康检查] token {s.token[:10]}... 鉴权失败，长期禁用")
+                except Exception:
+                    pass   # 网络抖动保持熔断，下轮再试
+
     def mark_parse(self, token, ok, pages=0):
-        """任务完成时回写 token 统计（解析成功/失败 + 页数）"""
+        """任务完成时回写 token 统计（解析成功/失败 + 页数；解析失败不触发熔断）"""
         s = self.slots_by_token.get(token)
         if s:
             with self.lock:
@@ -260,6 +377,8 @@ class TokenPool:
                     s.pages_parsed = d.get("pages_parsed", 0)
                     s.bytes_uploaded = d.get("bytes_uploaded", 0)
                     s.last_used = d.get("last_used", 0)
+                    s.fail_streak = d.get("fail_streak", 0)
+                    s.ban_until = d.get("ban_until", 0)   # ★ 熔断状态恢复（重启不丢）
                     # ★ 每日配额恢复（跨天自动重置）
                     s.daily_date = d.get("daily_date", time.strftime("%Y-%m-%d"))
                     s.daily_submits = d.get("daily_submits", 0)
@@ -290,16 +409,44 @@ class TokenPool:
         while time.time() - t0 < timeout:
             rate = self.effective_rate
             with self.lock:
-                for _ in range(len(self.slots)):
-                    s = self.slots[self._rr % len(self.slots)]
-                    self._rr += 1
-                    if s.available(rate):
-                        s.reserve()
-                        return s
+                cands = [s for s in self.slots if s.available(rate)]
+                if cands:
+                    s = self._pick(cands)
+                    s.reserve()
+                    return s
             if time.time() - t0 > 30:
                 self._adapt()
             time.sleep(0.5)
-        raise TimeoutError("所有 token 均不可用（限流/冷却/暂停/配额耗尽）")
+        raise TimeoutError("所有 token 均不可用（限流/冷却/暂停/熔断/配额耗尽）")
+
+    def _pick(self, cands):
+        """按策略从候选集中选 token（锁内调用）"""
+        if self.strategy == "weighted":
+            # ★ 平滑加权轮询（SWRR）：权重越大分到越多流量，天然防热点
+            total = sum(c.weight for c in cands) or 1.0
+            best = cands[0]
+            for c in cands:
+                c.current_weight += c.weight
+                if c.current_weight > best.current_weight:
+                    best = c
+            best.current_weight -= total
+            return best
+        if self.strategy == "score":
+            # ★ 健康度感知：成功率 ×100 + 权重 + 低延迟，连败中的 token 降权
+            def sc(c):
+                lat = c.latency_ema or 0.0
+                return (c.success_rate * 100.0
+                        + min(c.weight, 5.0) * 8.0
+                        - min(lat / 100.0, 40.0)
+                        - (20.0 if c.fail_streak > 0 else 0.0))
+            return max(cands, key=sc)
+        # rr：从指针处轮转（跳过不可用）
+        for _ in range(len(self.slots)):
+            s = self.slots[self._rr % len(self.slots)]
+            self._rr += 1
+            if s in cands:
+                return s
+        return cands[0]
 
     def mark_429(self, slot):
         with self.lock:
@@ -342,6 +489,7 @@ class TokenPool:
             return {
                 "tokens": len(self.slots),
                 "rate": self.effective_rate,
+                "strategy": self.strategy,
                 "ok": sum(s.ok_count for s in self.slots),
                 "err": sum(s.err_count for s in self.slots),
                 "rate_limited": sum(s.rate_limited for s in self.slots),
@@ -353,6 +501,9 @@ class TokenPool:
                 "bytes_uploaded": sum(s.bytes_uploaded for s in self.slots),
                 "cooling": sum(1 for s in self.slots if time.time() < s.cooldown_until),
                 "suspended_now": sum(1 for s in self.slots if time.time() < s.suspend_until),
+                "banned_now": sum(1 for s in self.slots if time.time() < s.ban_until),
+                "auth_failed": sum(1 for s in self.slots if s.auth_fail > 0),
+                "avg_success_rate": round(sum(s.success_rate for s in self.slots) / len(self.slots), 3) if self.slots else 1.0,
                 # ★ 每日配额汇总（官方：5000 文件/天、1000 页优先/天）
                 "daily": {"date": today,
                           "submits": d_submits,
@@ -559,6 +710,7 @@ def submit_task(pool, task, args):
         slot = pool.acquire()
         task.attempts += 1
         task.token = slot.token
+        t_submit = time.time()
         try:
             if task.kind == "url":
                 body = api_post("/extract/task/batch", slot.token, payload)
@@ -575,7 +727,7 @@ def submit_task(pool, task, args):
             if not isinstance(body, dict) or body.get("code") != 0:
                 msg = body.get("msg", "") if isinstance(body, dict) else ""
                 raise RuntimeError(f"MinerU 业务错误: {msg or str(body)[:80]}")
-            pool.mark_ok(slot)
+            pool.mark_result(slot, True, latency=(time.time() - t_submit) * 1000)
             task.batch_id = body["data"]["batch_id"]
             task.status = "submitted"
             task.last_poll = 0.0
@@ -592,36 +744,40 @@ def submit_task(pool, task, args):
                 detail = e.response.json().get("msg", "")[:80]
             except Exception:
                 pass
-            if "-60018" in str(e.response.text) or "-60019" in str(e.response.text):
-                pool.mark_suspend(slot)
-                log(f"  [配额] token {slot.token[:10]}... 日配额耗尽，暂停 1h")
+            code = e.response.status_code
+            if code in (401, 403):
+                # ★ 鉴权失败：无效 key → 长期禁用，换下一个 token
+                pool.mark_result(slot, False, err_type="auth", err_msg=f"HTTP {code} {detail}")
+                log(f"  [鉴权] token {slot.token[:10]}... HTTP {code} → 禁用，换 token 重试")
                 continue
-            pool.mark_err(slot)
-            if e.response.status_code >= 500:
-                pool.mark_5xx(slot)
-            log(f"  [错误] {task.source[:60]}: HTTP {e.response.status_code} {detail}")
-            if e.response.status_code >= 500:
+            if "-60018" in str(e.response.text) or "-60019" in str(e.response.text):
+                pool.mark_result(slot, False, err_type="quota", err_msg=detail or f"HTTP {code}")
+                continue
+            pool.mark_result(slot, False, err_type="network" if code >= 500 else "business",
+                             err_msg=f"HTTP {code} {detail}")
+            log(f"  [错误] {task.source[:60]}: HTTP {code} {detail}")
+            if code >= 500:
                 time.sleep(2)   # 服务端错误短暂重试
                 continue
             task.status = "failed"
-            task.error = f"HTTP {e.response.status_code} {detail}"
+            task.error = f"HTTP {code} {detail}"
             task.finished_at = time.time()
             return False
         except (KeyError, ValueError, RuntimeError) as e:
             em = str(e)
             # ★ 日配额耗尽类业务错误（HTTP 200 + code -60018 等）→ 暂停该 token 并换下一个重试
             if any(k in em for k in ("daily limit", "limit reached", "quota")):
-                pool.mark_suspend(slot)
-                log(f"  [配额] token {slot.token[:10]}... {em[:60]} → 暂停 12h，换 token 重试")
+                pool.mark_result(slot, False, err_type="quota", err_msg=em[:80])
+                log(f"  [配额] token {slot.token[:10]}... {em[:60]} → 暂停 {SUSPEND_60018 // 3600}h，换 token 重试")
                 continue
-            pool.mark_err(slot)
+            pool.mark_result(slot, False, err_type="business", err_msg=em[:80])
             log(f"  [错误] {task.source[:60]}: {str(e)[:80]}")
             task.status = "failed"
             task.error = str(e)[:120]
             task.finished_at = time.time()
             return False
         except Exception as e:
-            pool.mark_err(slot)
+            pool.mark_result(slot, False, err_type="network", err_msg=str(e)[:80])
             log(f"  [异常] {task.source[:60]}: {str(e)[:80]}")
             time.sleep(1)
     task.status = "failed"
@@ -791,10 +947,12 @@ def run(args):
         f"下载线程={args.download_workers}")
     log(f"模型: {args.model} | formula={args.formula} table={args.table} "
         f"ocr={args.ocr} lang={args.language}")
+    log(f"调度策略: {pool.strategy} | 熔断阈值: {pool.ban_threshold} | 健康检查: {pool.health_interval}s")
     log(f"输出: {args.out_dir} | 日志: {logf}")
 
     if not args.no_quota:
         threading.Thread(target=quota_loop, args=(pool, stop), daemon=True).start()
+    pool.start_health_check(stop)   # ★ new-api 风格：熔断 token 定期测活自动恢复
 
     to_submit = [t for t in tasks if t.status == "pending"]
     # 已提交的（含续跑的）直接进轮询
@@ -867,6 +1025,7 @@ def run(args):
         for t in candidates[: args.poll_batch]:
             t.last_poll = now
             if poll_batch(t) and t.status in ("done", "failed"):
+                pool.mark_parse(t.token, t.status == "done")   # ★ 成败回写 token（解析失败不熔断）
                 futures.append(dl_pool.submit(_finish, t))
         pending = [t for t in pending if t.status == "submitted"]
         if time.time() - last_state_save > STATE_SAVE_SEC:
@@ -927,6 +1086,12 @@ def main():
     ap.add_argument("--token", help="单个 token")
     ap.add_argument("--tokens", help="token 列表文件（每行一个）")
     ap.add_argument("--rate", type=int, default=40, help="每 token 每分钟提交数（服务端限 ~50）")
+    ap.add_argument("--strategy", choices=["rr", "weighted", "score"], default="rr",
+                    help="调度策略：rr=轮转 / weighted=平滑加权轮询 / score=成功率+延迟健康度")
+    ap.add_argument("--ban-threshold", type=int, default=5,
+                    help="连续失败熔断阈值（达阈值指数退避禁用，健康检查自动恢复）")
+    ap.add_argument("--health-interval", type=int, default=300,
+                    help="健康检查间隔秒（0=关闭；对熔断/暂停 token 测活自动恢复）")
     ap.add_argument("--submit-workers", type=int, default=8, help="并行提交线程数")
     ap.add_argument("--download-workers", type=int, default=8, help="zip 下载线程数")
     ap.add_argument("--poll-batch", type=int, default=100, help="每轮最多轮询任务数")
