@@ -44,6 +44,7 @@ MinerU API 服务：把 Token 池调度器封装为 HTTP API
 
 import argparse
 import base64
+import datetime
 import faulthandler
 import io
 import ipaddress
@@ -56,6 +57,8 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import uuid
 import zipfile
 from collections import Counter, deque
@@ -63,6 +66,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dashboard_page  # 内嵌 Dashboard 页面（GET /dashboard）
 import mineru_api_pool as mpool  # 复用 TokenPool / Task / submit / poll / download
 
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mineru_server_data")
@@ -752,6 +756,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._route_stats_tokens()
             elif path == "/v1/stats/trends":
                 self._route_stats_trends()
+            elif path == "/v1/history":
+                self._route_history()
+            elif path == "/dashboard":
+                return self._page_dashboard()
             elif path == "/v1/me":
                 self._route_me()
             elif path in ("/", "/health"):
@@ -1256,6 +1264,73 @@ class Handler(BaseHTTPRequestHandler):
             d = h[:5]
             by_day[d] = by_day.get(d, 0) + n
         self._send_json(0, {"by_hour": by_hour, "by_day": by_day})
+
+    # ── /dashboard（内嵌监控页，无需鉴权，数据接口仍鉴权）──
+    def _page_dashboard(self):
+        body = dashboard_page.PAGE.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # ── /v1/history（云端 GitHub 归档历史，admin）──
+    _hist_cache = {}  # fname -> (expire_at, text|None)
+
+    def _raw_history(self, fname):
+        hit = Handler._hist_cache.get(fname)
+        if hit and hit[0] > time.time():
+            return hit[1]
+        text = None
+        try:
+            url = f"https://raw.githubusercontent.com/ZhangCurosr/paper-notes/main/{fname}"
+            req = urllib.request.Request(url, headers={"User-Agent": "mineru-api-server"})
+            text = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+        except Exception:
+            text = None
+        Handler._hist_cache[fname] = (time.time() + 300, text)
+        if len(Handler._hist_cache) > 100:
+            Handler._hist_cache.clear()
+        return text
+
+    def _route_history(self):
+        """GET /v1/history?days=7：历史任务/配额/错误（从云端 GitHub 归档聚合，admin）"""
+        key, msg = self._auth(need_admin=True)
+        if not key:
+            return self._send_json(401, msg, 401)
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            days = min(max(int(q.get("days", ["7"])[0]), 1), 90)
+        except ValueError:
+            return self._send_json(400, "days 必须为数字", 400)
+        out = []
+        today = datetime.date.today()
+        for i in range(days - 1, -1, -1):
+            d = today - datetime.timedelta(days=i)
+            fname = f"data/history/{d.strftime('%Y-%m-%d')}.jsonl"
+            text = self._raw_history(fname)
+            if not text:
+                continue
+            agg = {"date": d.strftime("%m-%d"), "submits": 0, "pages": 0,
+                   "ok": 0, "err": 0, "files_left": None, "hours": {}}
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                agg["submits"] += r.get("submits", 0)
+                agg["pages"] += r.get("pages", 0)
+                agg["ok"] += r.get("ok", 0)
+                agg["err"] += r.get("err", 0)
+                if r.get("files_left") is not None:
+                    agg["files_left"] = r.get("files_left")
+                agg["hours"][r.get("hour", "")] = r.get("submits", 0)
+            out.append(agg)
+        self._send_json(0, {"days": out})
 
 
 # ─────────────────────────── 启动 ───────────────────────────
