@@ -17,6 +17,9 @@ services:
       # Render 自动注入 PORT，这里仅兜底
       - key: PORT
         value: 8900
+      # ★ 调度策略（new-api 风格：平滑加权轮询，天然防热点）
+      - key: MINERU_STRATEGY
+        value: weighted
       # MinerU tokens（逗号分隔）——面板设置，勿写入仓库
       - key: MINERU_TOKENS
         sync: false
