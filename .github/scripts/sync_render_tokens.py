@@ -108,7 +108,33 @@ def main():
                    api_key, {"value": new_val})
     if st not in (200, 201):
         print(f"更新失败: HTTP {st} {str(body)[:150]}"); sys.exit(1)
-    print(f"已更新 MINERU_TOKENS（{len(new_val)} 字符），Render 自动重新部署")
+    print(f"已更新 MINERU_TOKENS（{len(new_val)} 字符）")
+
+    # ★ 兜底：PUT 若与自动部署同窗口会被合并（实测），60s 内无新部署则手动触发
+    import time
+    time.sleep(15)
+    st, body = api("GET", f"/services/{svc_id}/deploys", api_key)
+    new_dep = False
+    if st == 200 and isinstance(body, list) and body:
+        newest = body[0].get("deploy", {})
+        # 新建部署：创建时间在 90s 内且非 live
+        import datetime
+        try:
+            created = datetime.datetime.fromisoformat(
+                (newest.get("createdAt") or "").replace("Z", "+00:00"))
+            age = (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds()
+            new_dep = age < 90 and newest.get("status") != "live"
+        except Exception:
+            pass
+    if new_dep:
+        print("自动部署已触发，等待生效")
+    else:
+        st2, body2 = api("POST", f"/services/{svc_id}/deploys",
+                         api_key, {"clearCache": "do_not_clear"})
+        print(f"未检测到新部署，手动触发: HTTP {st2}")
+        if st2 != 201:
+            print(f"手动触发失败: {str(body2)[:150]}"); sys.exit(1)
+    print("Render 部署中，完成后服务端 token 数将更新")
 
 
 if __name__ == "__main__":
