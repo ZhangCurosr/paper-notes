@@ -10,7 +10,8 @@
 """
 import argparse
 import json
-from common import call
+import sys
+from common import BASE, KEY, UA, call
 
 p = argparse.ArgumentParser(description="监控（admin）")
 p.add_argument("--tokens", action="store_true", help="token 明细")
@@ -19,15 +20,23 @@ p.add_argument("--metrics", action="store_true", help="Prometheus 指标")
 args = p.parse_args()
 
 if args.metrics:
-    print(call("GET", "/v1/metrics"))
+    # Prometheus 文本格式（非 JSON），直接原始输出
+    import urllib.request as _ur
+    req = _ur.Request(f"{BASE}/v1/metrics")
+    req.add_header("Authorization", f"Bearer {KEY}")
+    req.add_header("User-Agent", UA)
+    print(_ur.urlopen(req, timeout=60).read().decode())
+    sys.exit(0)
 elif args.tokens:
     d = call("GET", "/v1/stats/tokens")
     print(f"池: {d['data']['summary']['tokens']} token | "
           f"preflight {d['data']['summary']['preflight']}")
     for t in d["data"]["tokens"][:15]:
-        print(f"  {t['key'][:14]}... 状态={t.get('status','?')} 权重={t.get('weight')} "
-              f"成功={t.get('ok')} 失败={t.get('err')} 暂停={t.get('suspended')} "
-              f"429={t.get('rate_limited')} preflight={t.get('preflight')}")
+        st = ("熔断" if t.get("ban_active") else "配额暂停" if t.get("suspend_active")
+              else "冷却" if t.get("cooling") else "active")
+        print(f"  {t['token']:10s} {st:6s} 成功率={t.get('success_rate')} "
+              f"成功={t.get('ok')} 失败={t.get('err')} 暂停累计={t.get('suspended')} "
+              f"429={t.get('rate_limited')} 延迟={t.get('latency_ms')}ms preflight={t.get('preflight')}")
     if len(d["data"]["tokens"]) > 15:
         print(f"  ... 共 {len(d['data']['tokens'])} 个")
 elif args.trends:
