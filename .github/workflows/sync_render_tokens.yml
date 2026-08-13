@@ -35,4 +35,6 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
           MINERU_SERVICE_NAME: ${{ vars.MINERU_SERVICE_NAME || 'mineru-api' }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python .github/scripts/sync_render_tokens.py
