@@ -1313,7 +1313,7 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 continue
             agg = {"date": d.strftime("%m-%d"), "submits": 0, "pages": 0,
-                   "ok": 0, "err": 0, "files_left": None, "hours": {}}
+                   "ok": 0, "err": 0, "files_left": None, "latency": None, "hours": {}}
             for line in text.splitlines():
                 line = line.strip()
                 if not line:
@@ -1328,6 +1328,8 @@ class Handler(BaseHTTPRequestHandler):
                 agg["err"] += r.get("err", 0)
                 if r.get("files_left") is not None:
                     agg["files_left"] = r.get("files_left")
+                if r.get("latency"):
+                    agg["latency"] = r.get("latency")  # 当日最新快照的延迟分位
                 agg["hours"][r.get("hour", "")] = r.get("submits", 0)
             out.append(agg)
         self._send_json(0, {"days": out})
