@@ -12,11 +12,20 @@ REPOS = [
     ("ZhangCurosr/zhangcursor-papers-arxiv-ai-001", "arXiv"),
     ("ZhangCurosr/zhangcursor-papers-arxiv-cv-001", "arXiv"),
     ("ZhangCurosr/zhangcursor-papers-arxiv-lg-001", "arXiv"),
+    ("ZhangCurosr/zhangcursor-papers-acl-2023-001", "ACL 2023"),
     ("ZhangCurosr/zhangcursor-papers-acl-2024-001", "ACL 2024"),
+    ("ZhangCurosr/zhangcursor-papers-acl-2025-001", "ACL 2025"),
+    ("ZhangCurosr/zhangcursor-papers-emnlp-2023-001", "EMNLP 2023"),
     ("ZhangCurosr/zhangcursor-papers-emnlp-2024-001", "EMNLP 2024"),
+    ("ZhangCurosr/zhangcursor-papers-emnlp-2025-001", "EMNLP 2025"),
+    ("ZhangCurosr/zhangcursor-papers-naacl-2022-001", "NAACL 2022"),
     ("ZhangCurosr/zhangcursor-papers-naacl-2024-001", "NAACL 2024"),
+    ("ZhangCurosr/zhangcursor-papers-naacl-2025-001", "NAACL 2025"),
+    ("ZhangCurosr/zhangcursor-papers-coling-2025-001", "COLING 2025"),
     ("ZhangCurosr/zhangcursor-papers-cvpr-2023-001", "CVPR 2023"),
     ("ZhangCurosr/zhangcursor-papers-cvpr-2024-001", "CVPR 2024"),
+    ("ZhangCurosr/zhangcursor-papers-cvpr-2025-001", "CVPR 2025"),
+    ("ZhangCurosr/zhangcursor-papers-iccv-2023-001", "ICCV 2023"),
 ]
 
 def run(cmd, **kw):
