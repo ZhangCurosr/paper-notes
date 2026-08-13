@@ -215,7 +215,8 @@ class TokenPool:
         self.slots_by_token = {s.token: s for s in self.slots}   # token → slot 索引
         self.rate = rate
         self.rate_scale = 1.0           # 自适应降速系数
-        self.lock = threading.RLock()   # ★ RLock：stats() 锁内调 effective_rate 需可重入
+        self.lock = threading.RLock()
+        self._rr = 0   # ★ round-robin 指针（实例级：每次 acquire 从上次位置继续，避免永远选中 slots[0]）   # ★ RLock：stats() 锁内调 effective_rate 需可重入
         self.last_429_total = 0
         self.total_pages_parsed = 0     # 全池累计解析页数
 
@@ -286,13 +287,12 @@ class TokenPool:
     def acquire(self, timeout=600):
         """获取一个可用 token（预留窗口槽位）；无可用则等待。返回 TokenSlot"""
         t0 = time.time()
-        i = 0
         while time.time() - t0 < timeout:
             rate = self.effective_rate
             with self.lock:
                 for _ in range(len(self.slots)):
-                    s = self.slots[i % len(self.slots)]
-                    i += 1
+                    s = self.slots[self._rr % len(self.slots)]
+                    self._rr += 1
                     if s.available(rate):
                         s.reserve()
                         return s
