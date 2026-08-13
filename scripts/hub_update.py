@@ -143,12 +143,12 @@ def main():
     run(f"git -C {tmp} config user.email 'mineru-bot@users.noreply.github.com'", env=env)
     run(f"git -C {tmp} config user.name 'mineru-bot'", env=env)
     run(f"git -C {tmp} add -A", env=env)
-    run(f"git -C {tmp} commit -m 'hub +{len(new_rows)}' --allow-empty", env=env)
+    run(f"git -C {tmp} commit -m 'hub +{len(rows)} ({replaced} updated)' --allow-empty", env=env)
     if repo_exists(args.hub_repo, args.gh_token):
         run(f"git -C {tmp} push origin main", env=env)
     else:
         run(f"gh repo create {owner}/{args.hub_repo} --public --source={tmp} --push", env=env)
-    print(f"✅ Hub 更新完成: {owner}/{args.hub_repo}（+{len(new_rows)} 篇）")
+    print(f"✅ Hub 更新完成: {owner}/{args.hub_repo}（+{len(rows)} 篇，覆盖 {replaced}）")
 
 
 if __name__ == "__main__":
