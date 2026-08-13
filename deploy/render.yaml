@@ -4,7 +4,7 @@ services:
   - type: web
     name: mineru-api
     runtime: docker
-    repo: https://github.com/YOUR-USER/YOUR-REPO.git
+    repo: https://github.com/ZhangCurosr/paper-notes.git
     dockerfilePath: ./deploy/Dockerfile
     plan: free
     envVars:
