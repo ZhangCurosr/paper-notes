@@ -480,7 +480,9 @@ def load_tokens(args):
         tokens = [t.strip() for t in os.environ["MINERU_TOKENS"].split(",") if t.strip()]
     elif os.path.exists(CSV_PATH):
         with open(CSV_PATH, encoding="utf-8-sig") as f:
-            tokens = [r["api_key"] for r in csv.DictReader(f) if r.get("api_key")]
+            tokens = [str(r.get("api_key", "")).strip()
+                      for r in csv.DictReader(f)
+                      if r.get("api_key") and str(r.get("api_key")).strip()]
     tokens = list(dict.fromkeys(tokens))  # 去重保序
     if not tokens:
         sys.exit("错误: 未找到任何 token（--token / --tokens / MINERU_TOKENS / mineru_accounts.csv）")
