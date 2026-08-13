@@ -94,8 +94,9 @@ def push_batch(repo, owner, token, files, subdir, dry_run=False):
     env = {"PATH": os.environ["PATH"], "GH_TOKEN": token,
            "GIT_TERMINAL_PROMPT": "0"}
     try:
-        if repo_exists(repo, token):
-            run(f"git clone --depth 1 https://x-access-token:{token}@github.com/{owner}/{repo}.git {tmp}",
+        exists = repo_exists(repo, token)
+        if exists:
+            run(f"git clone --depth 1 https://oauth2:{token}@github.com/{owner}/{repo}.git {tmp}",
                 env=env, check=False)
             if not os.path.exists(os.path.join(tmp, ".git")):
                 os.makedirs(tmp, exist_ok=True)
@@ -103,21 +104,22 @@ def push_batch(repo, owner, token, files, subdir, dry_run=False):
         else:
             os.makedirs(tmp, exist_ok=True)
             run(f"git init -b main {tmp}", env=env)
-        # 复制文件到子目录
-        for rel, fp in files:
-            dest = os.path.join(tmp, subdir, rel)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(fp, "rb") as src, open(dest, "wb") as dst:
-                dst.write(src.read())
         run(f"git -C {tmp} config user.email 'mineru-bot@users.noreply.github.com'", env=env)
         run(f"git -C {tmp} config user.name 'mineru-bot'", env=env)
-        run(f"git -C {tmp} add -A", env=env)
-        run(f"git -C {tmp} commit -m 'sync {subdir}: {len(files)} files' --allow-empty", env=env)
-        if repo_exists(repo, token):
-            run(f"git -C {tmp} push origin main", env=env, check=False)
-        else:
-            run(f"gh repo create {owner}/{repo} --public --source={tmp} --push",
-                env=env)
+        # 按 MAX_FILES_PER_PUSH 分批复制+提交+推送（同一仓库多 commit）
+        for i in range(0, len(files), MAX_FILES_PER_PUSH):
+            chunk = files[i:i + MAX_FILES_PER_PUSH]
+            for rel, fp in chunk:
+                dest = os.path.join(tmp, subdir, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(fp, "rb") as s, open(dest, "wb") as d:
+                    d.write(s.read())
+            run(f"git -C {tmp} add -A", env=env)
+            run(f"git -C {tmp} commit -m 'sync {subdir}: batch {i // MAX_FILES_PER_PUSH + 1}/{ (len(files) + MAX_FILES_PER_PUSH - 1) // MAX_FILES_PER_PUSH }' --allow-empty", env=env)
+            if exists or repo_exists(repo, token):
+                run(f"git -C {tmp} push origin main", env=env, check=False)
+            else:
+                run(f"gh repo create {owner}/{repo} --public --source={tmp} --push", env=env)
         return True
     finally:
         import shutil
@@ -127,7 +129,7 @@ def push_batch(repo, owner, token, files, subdir, dry_run=False):
 def main():
     ap = argparse.ArgumentParser(description="GitHub 产物同步器（多仓库轮换）")
     ap.add_argument("--dir", required=True, help="产物目录（pool 输出根）")
-    ap.add_argument("--prefix", default="mineru", help="仓库名前缀，如 mineru-cs.CL")
+    ap.add_argument("--prefix", default="zhangcursor-papers", help="仓库名前缀，如 zhangcursor-papers-cs.CL")
     ap.add_argument("--gh-token", required=True, help="GitHub PAT（repo 权限）")
     ap.add_argument("--owner", help="GitHub 用户名（缺省从 token 推断）")
     ap.add_argument("--index-repo", default="", help="索引仓库名（记录 url→路径 映射，可空=不建）")
@@ -142,20 +144,16 @@ def main():
     owner = args.owner or ("dry-run-owner" if args.dry_run else get_owner(args.gh_token))
     print(f"共 {len(items)} 篇产物，总计 {sum(i['total_bytes'] for i in items)//1024//1024} MB")
 
-    # 按容量分批 → 仓库序号
+    # 按容量分批 → 仓库序号（默认一个分类一个仓库，超 max-bytes 才开新仓）
     batches = []          # [(repo_name, subdir, files[])]
-    cur, cur_bytes, cur_files, n = [], 0, 0, 1
+    cur, cur_bytes, n = [], 0, 1
     for it in items:
-        if cur and (cur_bytes + it["total_bytes"] > args.max_bytes
-                    or cur_files + len(it["files"]) > MAX_FILES_PER_PUSH):
-            repo = f"{args.prefix}-{n:03d}"
-            subdir = time.strftime("%Y-%m-%d")
-            batches.append((repo, subdir, cur))
+        if cur and cur_bytes + it["total_bytes"] > args.max_bytes:
+            batches.append((f"{args.prefix}-{n:03d}", time.strftime("%Y-%m-%d"), cur))
             n += 1
-            cur, cur_bytes, cur_files = [], 0, 0
+            cur, cur_bytes = [], 0
         cur.append(it)
         cur_bytes += it["total_bytes"]
-        cur_files += len(it["files"])
     if cur:
         batches.append((f"{args.prefix}-{n:03d}", time.strftime("%Y-%m-%d"), cur))
 
