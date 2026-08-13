@@ -423,18 +423,26 @@ def _poll_one(st, ut):
     try:
         t.last_poll = now
         if t.channel == "flash":
-            # ★ flash 通道 60s 未完成 → 回落 v4（flash 队列慢/网络抖动兜底）
-            if now - t.created_at > 60 and ut.flash_retry < 2:
-                ut.flash_retry += 1
-                t.channel = "v4"
-                t.batch_id = None
-                t.status = "pending"
-                t.poll_fails = 0
-                with st.lock:
-                    st.stats["flash_fallback"] += 1
-                log_info(f"[flash 回落] {ut.task_id} 60s 未完成 → 转 v4 重提")
-                return
-            flash_poll(t)
+            # ★ flash 超时判断：先刷一次状态，仍在正常处理则继续等（避免误回落）
+            if now - t.created_at > 120 and ut.flash_retry < 2:
+                flash_poll(t)
+                if t.status in ("done", "failed"):
+                    pass   # flash 已终态 → 走下方终态处理
+                elif t.status == "submitted" and t.poll_fails < 2:
+                    return   # flash 仍在正常处理，继续等
+                else:
+                    # flash 卡死/异常 → 回落 v4 重提
+                    ut.flash_retry += 1
+                    t.channel = "v4"
+                    t.batch_id = None
+                    t.status = "pending"
+                    t.poll_fails = 0
+                    with st.lock:
+                        st.stats["flash_fallback"] += 1
+                    log_info(f"[flash 回落] {ut.task_id} 120s 未完成/异常 → 转 v4 重提")
+                    return
+            else:
+                flash_poll(t)
         else:
             mpool.poll_batch(t)
         if t.status in ("done", "failed"):
