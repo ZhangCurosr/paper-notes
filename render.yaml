@@ -1,0 +1,27 @@
+# Render 部署配置（免费 Web Service）
+# 用法：
+#   1. https://render.com 注册（GitHub 账号登录最快）
+#   2. Dashboard → New → Blueprint → 选择 ZhangCurosr/paper-notes（public 仓库，自动读到本文件）
+#   3. 在 Blueprint 预览页填入两个环境变量（Secrets 不会入库）：
+#        - MINERU_TOKENS：逗号分隔的 MinerU API token（可放 10-60 个）
+#        - MINERU_ADMIN_KEY：自定义管理员 key（如 sk-admin-xxxx，建议 32 位随机）
+#   4. Apply → 等构建完成 → 访问 https://{服务名}.onrender.com/health
+services:
+  - type: web
+    name: mineru-api
+    runtime: docker
+    repo: https://github.com/ZhangCurosr/paper-notes.git
+    dockerfilePath: ./deploy/Dockerfile
+    plan: free
+    envVars:
+      # Render 自动注入 PORT，这里仅兜底
+      - key: PORT
+        value: 8900
+      # MinerU tokens（逗号分隔）——面板设置，勿写入仓库
+      - key: MINERU_TOKENS
+        sync: false
+      # 管理员 key——面板设置，重启后仍有效（免费层磁盘非持久，勿依赖文件）
+      - key: MINERU_ADMIN_KEY
+        sync: false
+    healthCheckPath: /health
+    # 免费层：15 分钟无流量休眠，冷启动 ~50s；由 paper-notes 的 heartbeat workflow 每 10 分钟保活
