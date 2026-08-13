@@ -570,6 +570,10 @@ def submit_task(pool, task, args):
                     if r.status_code >= 400:
                         raise RuntimeError(f"上传失败 HTTP {r.status_code}")
                 pool.mark_upload(slot, os.path.getsize(task.local_path))
+            # ★ 业务错误（HTTP 200 但 code!=0，body 无 data）→ 保留真实 msg
+            if not isinstance(body, dict) or body.get("code") != 0:
+                msg = body.get("msg", "") if isinstance(body, dict) else ""
+                raise RuntimeError(f"MinerU 业务错误: {msg or str(body)[:80]}")
             pool.mark_ok(slot)
             task.batch_id = body["data"]["batch_id"]
             task.status = "submitted"
