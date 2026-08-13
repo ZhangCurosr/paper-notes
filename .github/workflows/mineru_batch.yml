@@ -77,7 +77,9 @@ jobs:
       fail-fast: false
       matrix:
         # 仅保留 MinerU 服务器可达源（实测：mlr.press/neurips.cc/ojs.aaai 被拒）
-        venue: [acl2024, emnlp2024, naacl2024, cvpr2024, cvpr2023]
+        venue: [acl2023, acl2024, acl2025, emnlp2023, emnlp2024, emnlp2025,
+                naacl2022, naacl2024, naacl2025, coling2025,
+                cvpr2023, cvpr2024, cvpr2025, iccv2023]
         max: [200]
     steps:
       - name: Checkout
@@ -94,33 +96,51 @@ jobs:
           python scripts/conference_fetcher.py \
             --venue ${{ matrix.venue }} \
             --max ${{ matrix.max }} \
+            --skip-existing \
             --out logs/conf_${{ matrix.venue }}.json
       - name: Map prefix (venue → repo suffix)
         id: map
         run: |
           case "${{ matrix.venue }}" in
+            acl2023) echo "prefix=acl-2023" >> $GITHUB_OUTPUT ;;
             acl2024) echo "prefix=acl-2024" >> $GITHUB_OUTPUT ;;
+            acl2025) echo "prefix=acl-2025" >> $GITHUB_OUTPUT ;;
+            emnlp2023) echo "prefix=emnlp-2023" >> $GITHUB_OUTPUT ;;
             emnlp2024) echo "prefix=emnlp-2024" >> $GITHUB_OUTPUT ;;
+            emnlp2025) echo "prefix=emnlp-2025" >> $GITHUB_OUTPUT ;;
+            naacl2022) echo "prefix=naacl-2022" >> $GITHUB_OUTPUT ;;
             naacl2024) echo "prefix=naacl-2024" >> $GITHUB_OUTPUT ;;
-            cvpr2024) echo "prefix=cvpr-2024" >> $GITHUB_OUTPUT ;;
+            naacl2025) echo "prefix=naacl-2025" >> $GITHUB_OUTPUT ;;
+            coling2025) echo "prefix=coling-2025" >> $GITHUB_OUTPUT ;;
             cvpr2023) echo "prefix=cvpr-2023" >> $GITHUB_OUTPUT ;;
+            cvpr2024) echo "prefix=cvpr-2024" >> $GITHUB_OUTPUT ;;
+            cvpr2025) echo "prefix=cvpr-2025" >> $GITHUB_OUTPUT ;;
+            iccv2023) echo "prefix=iccv-2023" >> $GITHUB_OUTPUT ;;
           esac
       - name: Batch parse via token pool
         run: |
-          python scripts/mineru_api_pool.py \
-            --url-file logs/conf_${{ matrix.venue }}_urls.txt \
-            --out-dir output/${{ matrix.venue }} \
-            --rate 25 --submit-workers 4 --download-workers 8
+          if [ -s logs/conf_${{ matrix.venue }}_urls.txt ]; then
+            python scripts/mineru_api_pool.py \
+              --url-file logs/conf_${{ matrix.venue }}_urls.txt \
+              --out-dir output/${{ matrix.venue }} \
+              --rate 25 --submit-workers 4 --download-workers 8
+          else
+            echo "无新增论文，跳过解析"
+          fi
         env:
           MINERU_TOKENS: ${{ secrets.MINERU_TOKENS }}
       - name: Sync results to GitHub (auto new repos)
         run: |
-          python scripts/github_sync.py \
-            --dir output/${{ matrix.venue }} \
-            --prefix "zhangcursor-papers-${{ steps.map.outputs.prefix }}" \
-            --gh-token "${{ secrets.GH_TOKEN }}" \
-            --index-out "logs/index_${{ matrix.venue }}.json" \
-            --max-bytes 500000000
+          if [ -s logs/conf_${{ matrix.venue }}_urls.txt ]; then
+            python scripts/github_sync.py \
+              --dir output/${{ matrix.venue }} \
+              --prefix "zhangcursor-papers-${{ steps.map.outputs.prefix }}" \
+              --gh-token "${{ secrets.GH_TOKEN }}" \
+              --index-out "logs/index_${{ matrix.venue }}.json" \
+              --max-bytes 500000000
+          else
+            echo "无新增，跳过同步"
+          fi
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
       - name: Upload logs + index
