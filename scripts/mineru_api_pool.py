@@ -35,6 +35,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -396,7 +397,7 @@ class Task:
     __slots__ = ("source", "kind", "local_path", "batch_id", "token", "status",
                  "attempts", "created_at", "finished_at", "error", "result_url",
                  "last_poll", "poll_fails", "channel", "progress", "extra", "model",
-                 "task_opts")
+                 "task_opts", "out_dir")
 
     def __init__(self, source, kind="url", local_path=None):
         self.source = source          # URL 或文件路径
@@ -417,6 +418,7 @@ class Task:
         self.extra = None             # 单文件参数（page_ranges/is_ocr/data_id）
         self.model = None             # 任务级模型（None=用服务端默认）
         self.task_opts = None         # 任务级参数（language/pages/extra_formats/formula/table/ocr）
+        self.out_dir = None           # 产物落盘目录（相对 out_dir）
 
     def to_dict(self):
         return {"source": self.source, "kind": self.kind, "local_path": self.local_path,
@@ -425,7 +427,7 @@ class Task:
                 "finished_at": self.finished_at, "error": self.error,
                 "result_url": self.result_url, "channel": self.channel,
                 "progress": self.progress, "extra": self.extra, "model": self.model,
-                "task_opts": self.task_opts}
+                "task_opts": self.task_opts, "out_dir": self.out_dir}
 
     @staticmethod
     def from_dict(d):
@@ -441,6 +443,7 @@ class Task:
         t.channel = d.get("channel", "v4")
         t.progress = d.get("progress")
         t.extra = d.get("extra")
+        t.out_dir = d.get("out_dir")
         t.model = d.get("model")
         t.task_opts = d.get("task_opts")
         return t
@@ -643,28 +646,71 @@ def poll_batch(task):
     return False
 
 
+def _slug(s):
+    s = re.sub(r"[^0-9A-Za-z一-鿿]+", "-", s).strip("-")
+    return s[:60].rstrip("-") or "untitled"
+
+
+def _title_slug(md_path):
+    """从 full.md 提取标题并 slug 化：优先 Markdown # 标题行，fallback 首行长文本"""
+    try:
+        with open(md_path, encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f]
+        # 优先：markdown 一级标题（# 开头）
+        for line in lines:
+            if line.startswith("#"):
+                s = line.lstrip("#").strip()
+                if 6 <= len(s) <= 200 and "://" not in s:
+                    return _slug(s)
+        # fallback：第一行非空长文本（≥15 字符，排除 arXiv 版权声明等短行）
+        for line in lines:
+            if line and len(line) >= 15 and len(line) <= 200 and "://" not in line:
+                return _slug(line)
+    except Exception:
+        pass
+    return "untitled"
+
+
 def download_result(task, out_dir):
-    """下载产物 zip 并解压落盘 out_dir/{safe}_{batch8}/，失败重试 1 次"""
+    """下载产物 zip 并落盘 out_dir/{标题}_{batch8}/：仅保留 paper.pdf + full.md + images/ + meta.json"""
     if not task.result_url:
         # ★ 空 result_url（历史脏数据/异常）不重试，直接标记失败
         task.error = "result_url 为空（任务数据异常）"
         return None
-    safe = "".join(c for c in task.source.split("/")[-1] if c.isalnum() or c in "._-")[:60] or "file"
-    target = os.path.join(out_dir, f"{safe}_{task.batch_id[:8]}")
-    if os.path.exists(os.path.join(target, "full.md")):
-        return target
-    os.makedirs(target, exist_ok=True)
+    if task.out_dir and os.path.exists(os.path.join(task.out_dir, "full.md")):
+        return task.out_dir
     for attempt in range(2):
         try:
             r = requests.get(task.result_url, headers=HEADERS, timeout=(10, 120), stream=True)
             r.raise_for_status()
             zf = zipfile.ZipFile(io.BytesIO(r.content))
-            zf.extractall(target)
+            tmp = os.path.join(out_dir, f"_tmp_{task.batch_id[:8]}")
+            os.makedirs(tmp, exist_ok=True)
+            zf.extractall(tmp)
+            # 原 PDF：zip 内 {uuid}_origin.pdf → paper.pdf
+            pdf_src = next((n for n in zf.namelist() if n.endswith("_origin.pdf")), None)
+            if pdf_src:
+                os.replace(os.path.join(tmp, pdf_src), os.path.join(tmp, "paper.pdf"))
+            # 清理多余产物：layout/content_list/model json
+            for fn in os.listdir(tmp):
+                if fn.endswith(("_content_list.json", "_content_list_v2.json",
+                                "_model.json", "layout.json")):
+                    try:
+                        os.remove(os.path.join(tmp, fn))
+                    except OSError:
+                        pass
+            title = _title_slug(os.path.join(tmp, "full.md"))
+            target = os.path.join(out_dir, f"{title}_{task.batch_id[:8]}")
+            if os.path.exists(target):   # 同名标题 → 加后缀
+                target = os.path.join(out_dir, f"{title}_{task.batch_id[:8]}_{int(time.time()) % 10000}")
+            os.replace(tmp, target)
             with open(os.path.join(target, "meta.json"), "w", encoding="utf-8") as f:
                 json.dump({"source": task.source, "batch_id": task.batch_id,
+                           "title": title,
                            "token": (task.token or "")[:12] + "...",
                            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                            "result_url": task.result_url}, f, ensure_ascii=False, indent=1)
+            task.out_dir = target
             return target
         except Exception as e:
             if attempt == 0:
@@ -716,6 +762,7 @@ def run(args):
                 t.result_url = o.result_url
                 t.token = o.token
                 t.finished_at = o.finished_at
+                t.out_dir = o.out_dir
                 resumed += 1
             elif o.batch_id and o.status == "submitted":
                 t.status = "submitted"
@@ -741,7 +788,7 @@ def run(args):
     submitted = [t for t in tasks if t.status == "submitted"]
     # 续跑 done 但产物缺失的 → 重新下载
     re_dl = [t for t in tasks if t.status == "done"
-             and not os.path.exists(os.path.join(args.out_dir, f"{t.source.split('/')[-1][:60]}_{(t.batch_id or 'x')[:8]}", "full.md"))]
+             and not os.path.exists(os.path.join(args.out_dir, t.out_dir or f"{t.source.split('/')[-1][:60]}_{(t.batch_id or 'x')[:8]}", "full.md"))]
 
     # ── 提交阶段（多线程并行，token 池控速）──
     if to_submit:
