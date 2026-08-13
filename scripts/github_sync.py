@@ -39,6 +39,22 @@ def run(cmd, env=None, check=True):
     return r.stdout.strip()
 
 
+def guess_venue(source):
+    """从 URL 推断来源会议（供 hub 统计）"""
+    if "arxiv.org" in source:
+        return "arXiv"
+    m = __import__("re").search(r"/(\d{4})\.(?:findings-)?(acl|emnlp|naacl|coling)[-.]", source)
+    if m:
+        return f"{m.group(2).upper()} {m.group(1)}"
+    m = __import__("re").search(r"CVPR(\d{4})", source)
+    if m:
+        return f"CVPR {m.group(1)}"
+    if "mlr.press" in source: return "ICML"
+    if "neurips.cc" in source: return "NeurIPS"
+    if "aaai.org" in source: return "AAAI"
+    return "other"
+
+
 def collect(dir_path):
     """扫描产物目录 → [(source, batch_id, pages, files[])]"""
     items = []
@@ -65,8 +81,10 @@ def collect(dir_path):
                     files.append((rel, fp))
                     total += sz
         if files:
-            items.append({"source": meta.get("source", entry),
+            src = meta.get("source", entry)
+            items.append({"source": src,
                           "batch_id": meta.get("batch_id", entry[:8]),
+                          "venue": guess_venue(src),
                           "total_bytes": total,
                           "files": files})
     return items
@@ -180,6 +198,7 @@ def main():
                 index_rows.append({"source": it["source"], "repo": f"{owner}/{repo}",
                                    "path": f"{subdir}/{md[0] if md else ''}",
                                    "batch_id": it["batch_id"],
+                                   "venue": it.get("venue", ""),
                                    "synced_at": time.strftime("%Y-%m-%d %H:%M:%S")})
         else:
             print(f"❌ {owner}/{repo} 推送失败")
