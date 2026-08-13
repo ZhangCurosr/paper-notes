@@ -24,8 +24,8 @@ import subprocess
 import sys
 import time
 
-# 产物中保留的文件（丢弃 images/ 大图与大 json，控制仓库体积）
-KEEP_SUFFIXES = (".md", "layout.json", "content_list.json", "content_list_v2.json",
+# 产物中保留的文件：full.md + 原 PDF + 论文图表 + meta.json
+KEEP_SUFFIXES = (".md", ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
                  "meta.json")
 MAX_FILES_PER_PUSH = 200      # 单次 push 文件数上限（防 commit 过大）
 MAX_BYTES_DEFAULT = 500 * 1024 * 1024   # 单仓库容量阈值
