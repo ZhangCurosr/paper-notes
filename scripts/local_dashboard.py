@@ -189,12 +189,16 @@ def make_handler(client, cfg):
             if path.startswith("/api/task/"):
                 tid = path[len("/api/task/"):]
                 return self._json(client.get(f"/v1/tasks/{tid}"))
+            if path.startswith("/api/task-result/"):
+                tid = path[len("/api/task-result/"):]
+                return self._json(client.get(f"/v1/tasks/{tid}/result"))
             if path == "/api/tasks":
                 from urllib.parse import parse_qs, urlparse
                 q = parse_qs(urlparse(self.path).query)
                 limit = min(max(int(q.get("limit", ["100"])[0]), 1), 200)
+                offset = max(int(q.get("offset", ["0"])[0]), 0)
                 st = q.get("status", [""])[0]
-                p = f"/v1/tasks?limit={limit}"
+                p = f"/v1/tasks?limit={limit}&offset={offset}"
                 if st:
                     p += f"&status={st}"
                 return self._json(client.get(p))
@@ -213,6 +217,13 @@ def make_handler(client, cfg):
             if path.startswith("/api/retry/"):
                 tid = path[len("/api/retry/"):]
                 return self._json(client.call("POST", f"/v1/tasks/{tid}/retry"))
+            if path == "/api/submit":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)
+                try:
+                    body = json.loads(raw or b"{}")
+                except Exception:
+                    return self._json({"code": 400, "msg": "JSON 非法"}, 400)
+                return self._json(client.call("POST", "/v1/tasks", body))
             self._json({"code": 404, "msg": "not found"}, 404)
 
         def do_DELETE(self):
