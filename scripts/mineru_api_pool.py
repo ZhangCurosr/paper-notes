@@ -943,6 +943,32 @@ def _title_slug(md_path):
     return "untitled"
 
 
+def is_safe_result_url(url):
+    """产物下载 URL 校验（纵深防御）：仅 https + 拒绝内网/元数据字面量"""
+    from urllib.parse import urlparse
+    if not url or not isinstance(url, str) or len(url) > 2048:
+        return False
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    if p.scheme != "https":
+        return False
+    host = (p.hostname or "").lower().rstrip(".")
+    if not host or host in ("localhost", "localhost.localdomain") or host.endswith((".local", ".internal", ".lan")):
+        return False
+    if "metadata" in host or host == "169.254.169.254":
+        return False
+    try:
+        import ipaddress
+        a = ipaddress.ip_address(host)
+        if a.is_private or a.is_loopback or a.is_link_local or a.is_reserved or a.is_multicast:
+            return False
+    except ValueError:
+        pass   # 域名：https 传输保证，交给 CDN
+    return True
+
+
 def _safe_extract(zf, target_dir):
     """安全解压：防 zip slip（路径穿越）+ zip 炸弹（大小限制）"""
     MAX_ZIP_TOTAL = 2 * 1024 * 1024 * 1024   # 解压总大小上限 2GB
@@ -968,6 +994,10 @@ def download_result(task, out_dir):
     if not task.result_url:
         # ★ 空 result_url（历史脏数据/异常）不重试，直接标记失败
         task.error = "result_url 为空（任务数据异常）"
+        return None
+    # ★ 纵深防御：产物 URL 必须是公网 https（防响应被篡改指向内网）
+    if not is_safe_result_url(task.result_url):
+        task.error = "result_url 非法（仅允许公网 https）"
         return None
     if task.out_dir and os.path.exists(os.path.join(task.out_dir, "full.md")):
         return task.out_dir
