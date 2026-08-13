@@ -87,6 +87,7 @@ def flash_submit(local_path, opts):
         resp.raise_for_status()
         body = resp.json()
         if body.get("code") != 0:
+            log_info(f"[flash file 业务拒绝] {body.get('msg', body)[:120]}")
             return None   # 类型不支持/页数超限等 → 回落 v4
         task_id = body["data"]["task_id"]
         file_url = body["data"]["file_url"]
@@ -94,9 +95,11 @@ def flash_submit(local_path, opts):
             # ★ 签名 URL 校验严格：不带任何 header 的裸 PUT（带 Content-Type 会 403）
             r = mpool.requests.put(file_url, data=f, timeout=(30, 300))
             if r.status_code >= 400:
+                log_info(f"[flash file 上传失败] HTTP {r.status_code}")
                 return None
         return task_id
-    except Exception:
+    except Exception as e:
+        log_info(f"[flash file 提交异常] {str(e)[:100]}")
         return None
 
 
@@ -117,9 +120,11 @@ def flash_submit_url(url, opts):
         resp.raise_for_status()
         body = resp.json()
         if body.get("code") != 0:
+            log_info(f"[flash url 业务拒绝] {body.get('msg', body)[:120]}")
             return None
         return body["data"]["task_id"]
-    except Exception:
+    except Exception as e:
+        log_info(f"[flash url 提交异常] {str(e)[:100]}")
         return None
 
 
