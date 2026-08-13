@@ -244,7 +244,7 @@ curl -s -H "Authorization: Bearer sk-user-xxx" \
 }}
 ```
 
-> 若 `downloaded: false` → 产物仍在下载，轮询重试即可。
+> `latency_ms` 无样本时为 `null`；`daily` 为官方配额实时余量（5000 文件/天、1000 优先页/天）。
 
 ### 4.7 GET /v1/tasks/{id}/file/{name} —— 下载产物文件
 
@@ -330,8 +330,8 @@ curl -s -X DELETE -H "Authorization: Bearer sk-admin-xxxx" \
     "latency_ms": {"p50": 180, "p90": 350, "p99": 900},
     "preflight": {"ok": 445, "bad": 0, "skip": 0},
     "daily": {"date": "2026-08-13", "submits": 512, "files_left": 4488,
-              "files_limit": 5000, "pages": 3120, "pages_priority_left": 6880,
-              "pages_limit": 10000}
+              "files_limit": 5000, "pages": 3120, "pages_priority_left": 1000,
+              "pages_priority_limit": 1000, "quota_warn_tokens": 0}
   },
   "quota": {...}, "quota_obs": [...],
   "flash": {"rate_per_min": 20, "tasks": 15, "fallback_to_v4": 2},
