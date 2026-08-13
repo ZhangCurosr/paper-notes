@@ -45,19 +45,23 @@ def discover_repos():
             "https://api.github.com/users/ZhangCurosr/repos?per_page=100&sort=updated",
             headers={"Authorization": f"Bearer {GH_TOKEN}", "User-Agent": "x"})
         repos = json.loads(urllib.request.urlopen(req, timeout=60).read())
-        pat = re.compile(r"^zhangcursor-papers-([a-z]+)-(\d{4})-(\d{3})$")
         for r in repos:
-            m = pat.match(r["name"])
+            name = r["name"]
+            # arXiv 仓：zhangcursor-papers-arxiv-{cl,ai,cv,lg}-NNN
+            m = re.match(r"^zhangcursor-papers-arxiv-[a-z]{2}-\d{3}$", name)
+            if m:
+                out.append((f"ZhangCurosr/{name}", "arXiv"))
+                continue
+            # 会议仓：zhangcursor-papers-{acro}-{year}-NNN
+            m = re.match(r"^zhangcursor-papers-([a-z]+)-(\d{4})-(\d{3})$", name)
             if not m:
                 continue
-            acro, year, _ = m.group(1), int(m.group(2)), m.group(3)
-            if acro == "arxiv":
-                venue = "arXiv"
-            elif acro in REPO_VENUE:
+            acro, year = m.group(1), int(m.group(2))
+            if acro in REPO_VENUE:
                 venue = REPO_VENUE[acro](year)
             else:
                 venue = acro.upper()
-            out.append((f"ZhangCurosr/{r['name']}", venue))
+            out.append((f"ZhangCurosr/{name}", venue))
     except Exception as e:
         print(f"动态发现失败({e})，退回静态列表", flush=True)
         return REPOS
