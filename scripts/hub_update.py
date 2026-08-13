@@ -171,12 +171,6 @@ def main():
             replaced += 1
         by_source[r["source"]] = r
     merged = list(by_source.values())
-    # ★ 仓库归一：-002/-003 → -001（合并厂库后所有内容都在 -001）
-    import re as _re
-    for r in merged:
-        m = _re.match(r"(ZhangCurosr/zhangcursor-papers-.+?)-\d{3}$", r.get("repo", ""))
-        if m:
-            r["repo"] = m.group(1) + "-001"
     print(f"合并: 历史 {len(old)} + 本次 {len(rows)}（覆盖 {replaced}）= {len(merged)}")
 
     with open(os.path.join(tmp, "index.json"), "w", encoding="utf-8") as f:
