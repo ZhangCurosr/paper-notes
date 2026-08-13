@@ -28,6 +28,43 @@ REPOS = [
     ("ZhangCurosr/zhangcursor-papers-iccv-2023-001", "ICCV 2023"),
 ]
 
+# 从仓库名推导 venue：zhangcursor-papers-{acronym}-{year}-{NNN}
+REPO_VENUE = {
+    "acl": lambda y: f"ACL {y}", "emnlp": lambda y: f"EMNLP {y}",
+    "naacl": lambda y: f"NAACL {y}", "coling": lambda y: f"COLING {y}",
+    "cvpr": lambda y: f"CVPR {y}", "iccv": lambda y: f"ICCV {y}",
+}
+
+
+def discover_repos():
+    """动态发现所有论文仓（含 500MB 溢出分仓 -002/-003），返回 [(repo, venue)]"""
+    import urllib.request
+    out = []
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/users/ZhangCurosr/repos?per_page=100&sort=updated",
+            headers={"Authorization": f"Bearer {GH_TOKEN}", "User-Agent": "x"})
+        repos = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        pat = re.compile(r"^zhangcursor-papers-([a-z]+)-(\d{4})-(\d{3})$")
+        for r in repos:
+            m = pat.match(r["name"])
+            if not m:
+                continue
+            acro, year, _ = m.group(1), int(m.group(2)), m.group(3)
+            if acro == "arxiv":
+                venue = "arXiv"
+            elif acro in REPO_VENUE:
+                venue = REPO_VENUE[acro](year)
+            else:
+                venue = acro.upper()
+            out.append((f"ZhangCurosr/{r['name']}", venue))
+    except Exception as e:
+        print(f"动态发现失败({e})，退回静态列表", flush=True)
+        return REPOS
+    if not out:
+        return REPOS
+    return out
+
 def run(cmd, **kw):
     r = subprocess.run(cmd, capture_output=True, text=True, **kw)
     if r.returncode != 0:
@@ -43,8 +80,10 @@ def guess_venue(url):
         year, venue = m.group(1), m.group(2).upper()
         return f"{venue} {year}"
     if "thecvf.com" in url:
-        m = re.search(r"(\d{4})", url)
-        return f"CVPR {m.group(1)}" if m else "CVPR"
+        m = re.search(r"(CVPR|ICCV)(\d{4})", url)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
+        return "CVPR"
     if "mlr.press" in url:
         m = re.search(r"v(\d+)", url)
         return f"ICML {m.group(1)}" if m else "ICML"
@@ -58,7 +97,9 @@ def main():
     os.makedirs("work", exist_ok=True)
     hub_rows = []
     total_removed = 0
-    for repo, default_venue in REPOS:
+    repos = discover_repos()
+    print(f"发现 {len(repos)} 个论文仓库", flush=True)
+    for repo, default_venue in repos:
         name = repo.split("/")[-1]
         dst = os.path.join("work", name)
         if not os.path.exists(os.path.join(dst, ".git")):
