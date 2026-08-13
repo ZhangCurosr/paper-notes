@@ -113,10 +113,15 @@ def main():
                 old = json.load(f)
         except Exception:
             pass
-    seen = {r["source"] for r in old}
-    new_rows = [r for r in rows if r["source"] not in seen]
-    merged = old + new_rows
-    print(f"合并: 历史 {len(old)} + 本次新增 {len(new_rows)} = {len(merged)}")
+    # 同 source 的新条目覆盖旧条目（仓库改名后索引跟随新仓库名）
+    by_source = {r["source"]: r for r in old}
+    replaced = 0
+    for r in rows:
+        if r["source"] in by_source:
+            replaced += 1
+        by_source[r["source"]] = r
+    merged = list(by_source.values())
+    print(f"合并: 历史 {len(old)} + 本次 {len(rows)}（覆盖 {replaced}）= {len(merged)}")
 
     with open(os.path.join(tmp, "index.json"), "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, indent=1)
