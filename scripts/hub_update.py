@@ -22,7 +22,7 @@ import time
 from collections import Counter
 
 
-def run(cmd, env):
+def run(cmd, env, check=True):
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"命令失败: {cmd[:120]}\n{r.stderr[-400:]}")
