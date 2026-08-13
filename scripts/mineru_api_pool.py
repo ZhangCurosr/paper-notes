@@ -790,24 +790,34 @@ def run(args):
     re_dl = [t for t in tasks if t.status == "done"
              and not os.path.exists(os.path.join(args.out_dir, t.out_dir or f"{t.source.split('/')[-1][:60]}_{(t.batch_id or 'x')[:8]}", "full.md"))]
 
-    # ── 提交阶段（多线程并行，token 池控速）──
+    # ── 提交阶段（多线程并行，token 池控速；全 429 限流时集体等待重试）──
     if to_submit:
         t0 = time.time()
+        SUBMIT_DEADLINE = 900   # 提交窗口最长 15 分钟（并行 job 共享 token 时防 429 雪崩）
         def _submit_wrapper(pool, task, args):
             ok = submit_task(pool, task, args)
             return task, ok
-        with ThreadPoolExecutor(max_workers=args.submit_workers) as ex:
-            futs = [ex.submit(_submit_wrapper, pool, t, args) for t in to_submit]
-            for i, f in enumerate(as_completed(futs), 1):
-                task, ok = f.result()
-                if ok:
-                    submitted.append(task)
-                if i % 10 == 0 or i == len(futs):
-                    s = pool.stats()
-                    log(f"  提交进度 {i}/{len(futs)} | 窗口速率 {s['rate']}/min | "
-                        f"冷却 {s['cooling']} 暂停 {s['suspended']} | ok={s['ok']} err={s['err']}")
-                if i % 50 == 0:
-                    save_state(args.out_dir, tasks)
+        while to_submit and time.time() - t0 < SUBMIT_DEADLINE:
+            round_ok = []
+            with ThreadPoolExecutor(max_workers=args.submit_workers) as ex:
+                futs = [ex.submit(_submit_wrapper, pool, t, args) for t in to_submit]
+                for i, f in enumerate(as_completed(futs), 1):
+                    task, ok = f.result()
+                    if ok:
+                        submitted.append(task)
+                        round_ok.append(task)
+                    if i % 10 == 0 or i == len(futs):
+                        s = pool.stats()
+                        log(f"  提交进度 {len(submitted)}/{len(to_submit) + len(submitted)} | 窗口速率 {s['rate']}/min | "
+                            f"冷却 {s['cooling']} 暂停 {s['suspended']} | ok={s['ok']} err={s['err']}")
+                    if i % 50 == 0:
+                        save_state(args.out_dir, tasks)
+            to_submit = [t for t in to_submit if t not in round_ok]
+            if to_submit:
+                s = pool.stats()
+                log(f"  [限流等待] 剩余 {len(to_submit)} 任务未提交（冷却 {s['cooling']}）等 30s 重试")
+                save_state(args.out_dir, tasks)
+                time.sleep(30)
         log(f"提交阶段完成: 成功 {len(submitted)}/{len(tasks)} 耗时 {time.time()-t0:.0f}s")
 
     # ── 轮询 + 下载阶段 ──
