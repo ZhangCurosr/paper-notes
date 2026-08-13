@@ -25,6 +25,7 @@ python examples/mineru_api/quickstart.py "https://arxiv.org/pdf/2409.18839.pdf"
 | 08 | 错误处理与限流 | [08-errors-rate-limit.md](08-errors-rate-limit.md) | [common.py](../../examples/mineru_api/common.py) |
 | 09 | 调度池内部机制 | [09-pool-internals.md](09-pool-internals.md) | - |
 | 10 | 本地自建部署 | [10-local-deploy.md](10-local-deploy.md) | - |
+| 11 | 本地监控 Dashboard | [11-local-dashboard.md](11-local-dashboard.md) | [local_dashboard.py](../../scripts/local_dashboard.py) |
 
 ## 示例附件公共依赖
 
