@@ -21,6 +21,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Decrypt credentials (full CSV)
+        env:
+          CSV_PASSPHRASE: ${{ secrets.CSV_PASSPHRASE }}
+        run: |
+          gpg --batch --yes --decrypt --passphrase "$CSV_PASSPHRASE" \
+            -o mineru_accounts.csv mineru_accounts.csv.gpg
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -50,8 +56,6 @@ jobs:
             --url-file logs/batch_${{ matrix.category }}_urls.txt \
             --out-dir output/${{ matrix.category }} \
             --rate 20 --submit-workers 4 --download-workers 8
-        env:
-          MINERU_TOKENS: ${{ secrets.MINERU_TOKENS }}
       - name: Sync results to GitHub (auto new repos)
         run: |
           python scripts/github_sync.py \
@@ -98,6 +102,12 @@ jobs:
             --max ${{ matrix.max }} \
             --skip-existing \
             --out logs/conf_${{ matrix.venue }}.json
+      - name: Decrypt credentials (full CSV)
+        env:
+          CSV_PASSPHRASE: ${{ secrets.CSV_PASSPHRASE }}
+        run: |
+          gpg --batch --yes --decrypt --passphrase "$CSV_PASSPHRASE" \
+            -o mineru_accounts.csv mineru_accounts.csv.gpg
       - name: Map prefix (venue → repo suffix)
         id: map
         run: |
@@ -127,8 +137,6 @@ jobs:
           else
             echo "无新增论文，跳过解析"
           fi
-        env:
-          MINERU_TOKENS: ${{ secrets.MINERU_TOKENS }}
       - name: Sync results to GitHub (auto new repos)
         run: |
           if [ -s logs/conf_${{ matrix.venue }}_urls.txt ]; then
