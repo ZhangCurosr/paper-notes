@@ -270,6 +270,7 @@ class TokenSlot:
                 "cooling": time.time() < self.cooldown_until,
                 "suspend_active": time.time() < self.suspend_until,
                 "ban_active": time.time() < self.ban_until,
+                "ban_until": self.ban_until,   # ★ 持久化恢复用
                 "fail_streak": self.fail_streak,
                 "success_rate": round(self.success_rate, 3),
                 "latency_ms": int(self.latency_ema) if self.latency_ema else None,
@@ -461,6 +462,7 @@ class TokenPool:
                     s.last_used = d.get("last_used", 0)
                     s.fail_streak = d.get("fail_streak", 0)
                     s.ban_until = d.get("ban_until", 0)   # ★ 熔断状态恢复（重启不丢）
+                    s.latency_ema = d.get("latency_ms")   # ★ 延迟 EMA 恢复
                     # ★ 每日配额恢复（跨天自动重置）
                     s.daily_date = d.get("daily_date", time.strftime("%Y-%m-%d"))
                     s.daily_submits = d.get("daily_submits", 0)
@@ -941,6 +943,26 @@ def _title_slug(md_path):
     return "untitled"
 
 
+def _safe_extract(zf, target_dir):
+    """安全解压：防 zip slip（路径穿越）+ zip 炸弹（大小限制）"""
+    MAX_ZIP_TOTAL = 2 * 1024 * 1024 * 1024   # 解压总大小上限 2GB
+    MAX_ZIP_FILE = 512 * 1024 * 1024         # 单文件上限 512MB
+    target_r = os.path.realpath(target_dir)
+    total = 0
+    for info in zf.infolist():
+        name = info.filename.replace("\\", "/")
+        # 绝对路径 / 上级目录（含编码变体 %2e%2e）→ 拒绝
+        if name.startswith("/") or any(part == ".." for part in name.split("/")):
+            raise RuntimeError(f"非法 zip 条目: {name[:60]}")
+        fp = os.path.realpath(os.path.join(target_r, name))
+        if fp != target_r and not fp.startswith(target_r + os.sep):
+            raise RuntimeError(f"zip 条目越界: {name[:60]}")
+        total += info.file_size
+        if info.file_size > MAX_ZIP_FILE or total > MAX_ZIP_TOTAL:
+            raise RuntimeError("zip 内容超限（防 zip 炸弹）")
+    zf.extractall(target_r)
+
+
 def download_result(task, out_dir):
     """下载产物 zip 并落盘 out_dir/{标题}_{batch8}/：仅保留 paper.pdf + full.md + images/ + meta.json"""
     if not task.result_url:
@@ -956,7 +978,7 @@ def download_result(task, out_dir):
             zf = zipfile.ZipFile(io.BytesIO(r.content))
             tmp = os.path.join(out_dir, f"_tmp_{task.batch_id[:8]}")
             os.makedirs(tmp, exist_ok=True)
-            zf.extractall(tmp)
+            _safe_extract(zf, tmp)   # ★ zip slip / zip 炸弹防护
             # 原 PDF：zip 内 {uuid}_origin.pdf → paper.pdf
             pdf_src = next((n for n in zf.namelist() if n.endswith("_origin.pdf")), None)
             if pdf_src:
