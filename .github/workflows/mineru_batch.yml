@@ -49,7 +49,7 @@ jobs:
           python scripts/mineru_api_pool.py \
             --url-file logs/batch_${{ matrix.category }}_urls.txt \
             --out-dir output/${{ matrix.category }} \
-            --rate 25 --submit-workers 4 --download-workers 8
+            --rate 20 --submit-workers 4 --download-workers 8
         env:
           MINERU_TOKENS: ${{ secrets.MINERU_TOKENS }}
       - name: Sync results to GitHub (auto new repos)
@@ -123,7 +123,7 @@ jobs:
             python scripts/mineru_api_pool.py \
               --url-file logs/conf_${{ matrix.venue }}_urls.txt \
               --out-dir output/${{ matrix.venue }} \
-              --rate 25 --submit-workers 4 --download-workers 8
+              --rate 15 --submit-workers 3 --download-workers 6
           else
             echo "无新增论文，跳过解析"
           fi
