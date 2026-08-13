@@ -1,74 +1,84 @@
-# 论文笔记流水线（Paper Notes Pipeline）
+# 🚀 paper-notes — 论文自动抓取 · 解析 · 归档流水线
 
-PDF 解析全自动流水线：**零服务器成本**，基于 GitHub Actions 定时调度 + GitHub 多仓库存储，把论文/文档批量转换为可检索的 Markdown 知识库。
+**每天自动抓取 arXiv 与四大顶会的新论文，经 MinerU 云端解析后归档为完整论文笔记**（原版 PDF + 全文 Markdown + 论文图表 + 元数据），全程云端运行，无需本地机器。
 
-## 能力
+<!-- 胶囊徽章带 -->
+![Daily](https://img.shields.io/github/actions/workflow/status/ZhangCurosr/paper-notes/mineru_batch.yml?label=daily%20batch&style=flat-square)
+![Dedup](https://img.shields.io/github/actions/workflow/status/ZhangCurosr/paper-notes/dedup_repos.yml?label=dedup&style=flat-square)
+![Cron](https://img.shields.io/badge/Cron-02%3A00%20%2F%2014%3A00%20UTC-informational?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
 
-- 🚀 **arXiv 论文批量采集**：免费 API 按分类/日期/关键词拉取论文 → 自动生成解析任务
-- ⚡ **Token 池并发调度**：多 token 滑动窗口限速、429 冷却、日配额感知（5000 文件/1000 页/天）、断点续跑
-- 🌐 **免 token 双通道**：小文件自动走 flash agent API（≤10MB），服务异常自动回落 v4
-- 📦 **多仓库存储**：产物（Markdown+版面 JSON）按容量阈值自动开新仓库 + 索引映射
-- 🖥️ **可选常驻 API**：Docker 镜像 + Render 免费 Web Service（15min 休眠 + 自动保活）
+## 这是什么
 
-## 快速开始（全自动）
+- **抓取**：arXiv 4 个分类（cs.CL / cs.AI / cs.CV / cs.LG）+ 5 个会议源（ACL 2024 / EMNLP 2024 / NAACL 2024 / CVPR 2023 / CVPR 2024）
+- **解析**：MinerU 云端 API（多 Token 池轮换调度，429 自适应退避，零依赖）
+- **归档**：论文标题命名目录 → 9 个产物仓库（`zhangcursor-papers-*`），500MB 阈值自动开新仓
+- **索引**：`zhangcursor-hub` 总厂库统一检索，去重 workflow 一键清理冗余
 
-### 1. 部署
+## 流水线架构
 
-```bash
-git clone https://github.com/ZhangCurosr/mineru-pipeline.git
-cd mineru-pipeline
+```
+arXiv API / ACL Anthology / CVF Open Access
+        │  fetch（每天 02:00 / 14:00 UTC cron 触发）
+        ▼
+   MinerU Token 池（10~30 个 token 轮换，限流自适应）
+        │  提交 → 轮询 → 下载（zip → 裁剪产物）
+        ▼
+  github_sync（产物推送到 9 个论文仓库 + 追加 hub 索引）
+        ▼
+  zhangcursor-hub（统一索引）◀── Dedup Repos（手动去重重建）
 ```
 
-### 2. 配置 Secrets（仓库 Settings → Actions）
-
-| Secret | 内容 |
+| 组件 | 作用 |
 |---|---|
-| `MINERU_TOKENS` | 逗号分隔的 MinerU API token（账号级共享 5000 文件/天） |
-| `GH_TOKEN` | GitHub PAT（repo 权限，用于自动建产物仓库） |
+| `arxiv_fetcher.py` | arXiv 分类抓取（去重 / 去重后保留当日新增） |
+| `conference_fetcher.py` | 会议源抓取（ACL 家族 / CVF，含分页与重试） |
+| `mineru_api_pool.py` | MinerU API 调度器：Token 池轮换、429 冷却、多线程提交/下载、断点续跑 |
+| `github_sync.py` | 产物推送（自动开仓 / 分批 commit / 索引合并） |
+| `hub_update.py` | 总厂库合并（同 source 覆盖 + 仓库名归一） |
+| `dedup_repos.py` | 云端去重：同论文保留完整版，删除冗余目录 |
+| `sync_hub_from_dedup.py` | 去重后重建 hub 索引 + README |
 
-### 3. 触发
+## 快速开始（Fork 部署）
 
-- 自动：每天 02:00 / 14:00 UTC（`.github/workflows/mineru_batch.yml` cron）
-- 手动：Actions 页面 `workflow_dispatch`
+1. **Fork** 本仓库（公开仓库即可，GitHub Actions 免费额度无限）
+2. **配置 Secrets**（Settings → Secrets and variables → Actions）：
 
-### 4. 产物落点
+| Secret | 说明 |
+|---|---|
+| `MINERU_TOKENS` | MinerU API Token 列表，逗号分隔（越多越稳，建议 ≥10） |
+| `GH_TOKEN` | 带 `repo` 权限的 GitHub Token（用于推送产物仓库） |
 
-```
-mineru-{分类}-001/   ← 自动创建的 public 仓库
-  └─ 2026-08-12/
-      └─ {paper_id}/
-          ├─ full.md               ← 完整 Markdown（公式 LaTeX/图片引用）
-          ├─ layout.json           ← 版面分析（页数统计）
-          └─ content_list.json     ← 内容结构化（RAG 直用）
-mineru-index/        ← 索引仓库（url → 仓库/路径 映射）
-```
+3. **运行**：Actions → `MinerU Daily Batch` → Run workflow（或等 cron 自动触发）
 
-## 本地快速试跑
+## 本地运行
 
 ```bash
 pip install requests
-
-# 拉 1 天 cs.CL 论文并解析（需 MINERU_TOKENS 环境变量）
-python scripts/arxiv_fetcher.py --category cs.CL --days 1 --max 50 --out logs/b.json
-python scripts/mineru_api_pool.py --url-file logs/b_urls.txt --out-dir output/ --rate 40
-
-# 推送产物到 GitHub 多仓库（演练模式）
-python scripts/github_sync.py --dir output/ --prefix mineru-cs.CL \
-    --gh-token ghp_xxx --dry-run
+# 抓取 → 解析 → 同步（需配置环境变量 MINERU_TOKENS / GH_TOKEN）
+python scripts/arxiv_fetcher.py --category cs.CL --days 1 --max 250 --out logs/batch.json
+python scripts/mineru_api_pool.py --url-file logs/batch_urls.txt --out-dir output/cs.CL --rate 25
+python scripts/github_sync.py --dir output/cs.CL --prefix "zhangcursor-papers-arxiv-cl" \
+  --gh-token "$GH_TOKEN" --index-out logs/index.json
 ```
 
-## 架构
+## 产物格式
 
 ```
-GitHub Actions cron ──→ arxiv_fetcher → mineru_api_pool（token 池并发）
-     │                                        │
-     └── github_sync ──→ gh repo create（自动建仓）→ push 产物
-                            └→ mineru-index 索引更新
+{日期}/{论文标题}_{batch8}/
+├── paper.pdf      # 原版 PDF
+├── full.md        # 解析全文 Markdown
+├── images/        # 论文图表
+└── meta.json      # 元数据（source / title / venue / created_at）
 ```
 
-详见 `docs/DEPLOY_FREE.md`（平台调研/容量规划/成本核算）与 `docs/mineru_api_research.md`（API 实测报告）。
+## Limits
 
-## 安全说明
+- MinerU 服务不可达的论文源会被跳过（实测 mlr.press / neurips.cc / ojs.aaai.org 被拒）
+- 单日单源抓取上限 250 篇；总厂库容量 500MB/仓，超限自动开新仓
+- 解析为机器生成结果，公式 / 表格偶有误差，请以原文为准
+- 产物为研究学习用途，论文版权归原作者/出版社所有
 
-- 真实凭据（token/密码）一律走 Secrets 或本地 `.mineru_secret`，**永不入库**
-- `mineru_accounts.csv.example` 为格式示例（无真实值）
+## License
+
+MIT
