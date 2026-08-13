@@ -49,6 +49,9 @@ def guess_venue(source):
     m = __import__("re").search(r"CVPR(\d{4})", source)
     if m:
         return f"CVPR {m.group(1)}"
+    m = __import__("re").search(r"ICCV(\d{4})", source)
+    if m:
+        return f"ICCV {m.group(1)}"
     if "mlr.press" in source: return "ICML"
     if "neurips.cc" in source: return "NeurIPS"
     if "aaai.org" in source: return "AAAI"
