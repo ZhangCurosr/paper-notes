@@ -41,7 +41,7 @@ import threading
 import time
 import traceback
 import zipfile
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -74,7 +74,27 @@ QUOTA_FILE_BUFFER = 20    # 文件配额缓冲（留余量，防计数偏差提�
 QUOTA_PAGE_WARN = 0.9     # 页数配额告警阈值（用掉 90% 时标记）
 
 LOGF = None
+EVENT_LOGF = None   # 结构化事件日志（JSON lines）
 LOCK = threading.Lock()
+
+
+def set_event_log(path):
+    """启用结构化事件日志（JSON lines，供分析/监控）"""
+    global EVENT_LOGF
+    EVENT_LOGF = path
+
+
+def log_event(event, **fields):
+    """写结构化事件：{"ts": "2026-08-13 17:00:00", "event": "circuit_break", ...}"""
+    if not EVENT_LOGF:
+        return
+    try:
+        rec = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "event": event}
+        rec.update(fields)
+        with open(EVENT_LOGF, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def log(*args):
@@ -109,14 +129,17 @@ class TokenSlot:
         self.err_count = 0             # 提交失败
         self.last_429_at = 0.0
         # ★ new-api 风格健康度
-        self.weight = 1.0              # 权重（加权策略用，默认均等）
+        self.weight = 1.0              # 权重（加权策略用，默认均等；动态调整 0.5~2.0）
         self.current_weight = 0.0      # 平滑加权轮询（SWRR）累计值
         self.fail_streak = 0           # 连续失败次数（熔断依据）
         self.ban_until = 0.0           # 熔断截止（指数退避）
         self.success_win = deque(maxlen=20)   # 最近 20 次成败窗口（成功率）
         self.latency_ema = None        # 提交延迟 EMA（毫秒，指数平滑）
+        self.latencies = deque(maxlen=200)    # ★ 延迟样本（p50/p90/p99 分位数）
+        self.err_codes = Counter()     # ★ 错误码分布（429/-60018/401/5xx/timeout/business）
         self.last_err = ""             # 最近一次失败原因
         self.auth_fail = 0             # 鉴权失败次数（401/403 → 永久禁用）
+        self.preflight = None          # ★ 启动预热探测：None=未测 / True=通过 / False=失败
         # ★ 细粒度统计
         self.last_used = 0.0           # 最近一次提交时间
         self.total_requests = 0        # 总提交请求数（含失败重试）
@@ -190,6 +213,14 @@ class TokenSlot:
             return 1.0
         return sum(self.success_win) / len(self.success_win)
 
+    def latency_pct(self, p):
+        """延迟分位数（毫秒）：p 为 50/90/99"""
+        if not self.latencies:
+            return None
+        arr = sorted(self.latencies)
+        idx = min(len(arr) - 1, int(len(arr) * p / 100.0))
+        return int(arr[idx])
+
     # ── 每日配额 ──
     def _roll_daily(self):
         """跨天自动重置每日计数"""
@@ -242,6 +273,11 @@ class TokenSlot:
                 "fail_streak": self.fail_streak,
                 "success_rate": round(self.success_rate, 3),
                 "latency_ms": int(self.latency_ema) if self.latency_ema else None,
+                "latency_p50": self.latency_pct(50),
+                "latency_p90": self.latency_pct(90),
+                "latency_p99": self.latency_pct(99),
+                "err_codes": dict(self.err_codes),
+                "preflight": self.preflight,
                 "last_err": self.last_err,
                 "window_len": len(self.window),
                 # ★ 每日配额
@@ -274,7 +310,7 @@ class TokenPool:
         self.last_429_total = 0
         self.total_pages_parsed = 0     # 全池累计解析页数
 
-    # ── new-api 风格：统一成败上报（成败窗口 + 分类处置）──
+    # ── new-api 风格：统一成败上报（成败窗口 + 分类处置 + 统计）──
     def mark_result(self, slot, ok, latency=None, err_type=None, err_msg=""):
         """统一成败上报。err_type：quota=配额耗尽 / auth=鉴权失败 / network=网络或5xx / business=业务错误
         429 走 mark_429（冷却不熔断）；解析失败走 mark_parse（内容问题不熔断）"""
@@ -285,20 +321,28 @@ class TokenPool:
             if ok:
                 slot.ok_count += 1
                 slot.on_success(latency)
+                if latency is not None:
+                    slot.latencies.append(latency)   # ★ 延迟样本（分位数）
                 slot.mark_submit()   # ★ 每日文件配额入账
             else:
+                code = err_msg.split(" ")[0][:12] if err_msg else (err_type or "fail")
+                slot.err_codes[code] += 1   # ★ 错误码分布
                 slot.on_fail(err_msg)
                 if err_type == "quota":
                     slot.on_suspend()
                     log(f"  [配额] token {slot.token[:10]}... {err_msg[:50]} → 暂停 {SUSPEND_60018 // 3600}h")
+                    log_event("quota_suspend", token=slot.token[-8:], msg=err_msg[:80])
                 elif err_type == "auth":
                     slot.on_auth_fail()
                     log(f"  [鉴权] token {slot.token[:10]}... {err_msg[:50]} → 长期禁用（无效 key）")
+                    log_event("auth_ban", token=slot.token[-8:])
                 elif err_type == "network":
                     slot.server_error += 1
                     self._maybe_ban(slot)
                 elif err_type == "business":
                     self._maybe_ban(slot)
+            # ★ 动态权重（weighted 策略）：成功率越高权重越大（0.5 ~ 2.0）
+            slot.weight = round(max(0.5, min(2.0, 0.5 + slot.success_rate * 1.5)), 3)
 
     def _maybe_ban(self, slot):
         """连续失败达阈值 → 指数退避熔断（60s→120s→240s→…→1h 封顶）"""
@@ -306,6 +350,42 @@ class TokenPool:
             backoff = min(3600, 60 * (2 ** min(slot.fail_streak - self.ban_threshold + 1, 6)))
             slot.on_ban(backoff)
             log(f"  [熔断] token {slot.token[:10]}... 连续失败 {slot.fail_streak} 次，禁用 {backoff}s")
+            log_event("circuit_break", token=slot.token[-8:], streak=slot.fail_streak, backoff_s=backoff)
+
+    # ── 启动预热探测：并发对全部 token 测活（GET /quota），无效 key 启动即禁用 ──
+    def start_preflight(self):
+        threading.Thread(target=self._preflight, daemon=True).start()
+
+    def _preflight(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def probe(s):
+            try:
+                api_get("/quota", s.token, timeout=10)
+                with self.lock:
+                    s.preflight = True
+            except RateLimited:
+                with self.lock:
+                    s.preflight = None
+            except requests.HTTPError as e:
+                if e.response.status_code in (401, 403):
+                    with self.lock:
+                        s.on_auth_fail()
+                        s.preflight = False
+                else:
+                    with self.lock:
+                        s.preflight = None
+            except Exception:
+                with self.lock:
+                    s.preflight = None
+
+        with ThreadPoolExecutor(max_workers=12) as ex:
+            list(ex.map(probe, self.slots))
+        ok_n = sum(1 for s in self.slots if s.preflight is True)
+        bad_n = sum(1 for s in self.slots if s.preflight is False)
+        skip_n = sum(1 for s in self.slots if s.preflight is None)
+        log(f"  [预热探测] 完成: 有效 {ok_n} | 无效禁用 {bad_n} | 网络抖动跳过 {skip_n}（共 {len(self.slots)}）")
+        log_event("preflight_done", ok=ok_n, bad=bad_n, skip=skip_n, total=len(self.slots))
 
     # ── 健康检查：定期对熔断/暂停中的 token 测活（GET /quota 轻量，不耗配额）──
     def start_health_check(self, stop):
@@ -327,6 +407,7 @@ class TokenPool:
                             s.ban_until = 0.0
                             s.fail_streak = 0
                             log(f"  [健康检查] token {s.token[:10]}... 恢复可用")
+                            log_event("health_recovered", token=s.token[-8:])
                 except RateLimited:
                     pass
                 except requests.HTTPError as e:
@@ -334,6 +415,7 @@ class TokenPool:
                         with self.lock:
                             s.on_auth_fail()
                         log(f"  [健康检查] token {s.token[:10]}... 鉴权失败，长期禁用")
+                        log_event("health_auth_ban", token=s.token[-8:])
                 except Exception:
                     pass   # 网络抖动保持熔断，下轮再试
 
@@ -479,6 +561,16 @@ class TokenPool:
         with self.lock:
             slot.bytes_uploaded += nbytes
 
+    def _pool_pct(self, p):
+        """池级延迟分位数（合并所有 token 样本）"""
+        arr = []
+        for s in self.slots:
+            arr.extend(s.latencies)
+        if not arr:
+            return None
+        arr.sort()
+        return int(arr[min(len(arr) - 1, int(len(arr) * p / 100.0))])
+
     def stats(self):
         with self.lock:
             detail = [s.to_dict() for s in self.slots]
@@ -504,6 +596,15 @@ class TokenPool:
                 "banned_now": sum(1 for s in self.slots if time.time() < s.ban_until),
                 "auth_failed": sum(1 for s in self.slots if s.auth_fail > 0),
                 "avg_success_rate": round(sum(s.success_rate for s in self.slots) / len(self.slots), 3) if self.slots else 1.0,
+                "avg_weight": round(sum(s.weight for s in self.slots) / len(self.slots), 3) if self.slots else 1.0,
+                # ★ 错误码分布汇总（最近样本）
+                "err_dist": dict(sum((Counter(s.err_codes) for s in self.slots), Counter())),
+                # ★ 池级延迟分位数（毫秒）
+                "latency_ms": {"p50": self._pool_pct(50), "p90": self._pool_pct(90), "p99": self._pool_pct(99)},
+                # ★ 预热探测结果
+                "preflight": {"ok": sum(1 for s in self.slots if s.preflight is True),
+                               "bad": sum(1 for s in self.slots if s.preflight is False),
+                               "skip": sum(1 for s in self.slots if s.preflight is None)},
                 # ★ 每日配额汇总（官方：5000 文件/天、1000 页优先/天）
                 "daily": {"date": today,
                           "submits": d_submits,
@@ -953,6 +1054,8 @@ def run(args):
     if not args.no_quota:
         threading.Thread(target=quota_loop, args=(pool, stop), daemon=True).start()
     pool.start_health_check(stop)   # ★ new-api 风格：熔断 token 定期测活自动恢复
+    pool.start_preflight()          # ★ 启动预热探测：无效 key 立即禁用
+    set_event_log(os.path.join(args.out_dir, "events.jsonl"))   # ★ 结构化事件日志
 
     to_submit = [t for t in tasks if t.status == "pending"]
     # 已提交的（含续跑的）直接进轮询
@@ -1056,6 +1159,17 @@ def run(args):
 
     # ── 汇总报告 ──
     save_state(args.out_dir, tasks)
+    ps = pool.stats()
+    # ★ 健康排名（TOP5 / BOTTOM5）
+    detail = sorted(ps["detail"], key=lambda d: (-d["success_rate"], -d["ok"]))
+    top5 = [{k: d[k] for k in ("token", "ok", "err", "success_rate", "latency_ms", "parse_ok", "parse_fail")} for d in detail[:5]]
+    bot5 = [{k: d[k] for k in ("token", "ok", "err", "success_rate", "latency_ms", "parse_ok", "parse_fail")} for d in detail[-5:]]
+    log("─ 健康 TOP5 ─")
+    for d in top5:
+        log(f"  {d['token']} sr={d['success_rate']} ok={d['ok']} err={d['err']} lat={d['latency_ms']}ms parse={d['parse_ok']}/{d['parse_fail']}")
+    log("─ 健康 BOTTOM5 ─")
+    for d in bot5:
+        log(f"  {d['token']} sr={d['success_rate']} ok={d['ok']} err={d['err']} lat={d['latency_ms']}ms parse={d['parse_ok']}/{d['parse_fail']}")
     summary = {
         "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "total": len(tasks),
@@ -1063,7 +1177,10 @@ def run(args):
         "failed": failed_count,
         "pending": sum(1 for t in tasks if t.status == "submitted"),
         "submit_ok": len(submitted),
-        "tokens": pool.stats(),
+        "pool": {k: v for k, v in ps.items() if k != "detail"},   # ★ 池级指标（含 err_dist/延迟分位/预检）
+        "health_top5": top5,
+        "health_bottom5": bot5,
+        "tokens": pool.stats()["detail"],
         "tasks": [t.to_dict() for t in tasks],
     }
     with open(os.path.join(args.out_dir, "summary.json"), "w", encoding="utf-8") as f:
