@@ -474,7 +474,11 @@ def _poll_loop(st):
                 except Exception:
                     pass
             st._save()
-        time.sleep(2)
+            time.sleep(2)
+        elif cand:
+            time.sleep(2)      # 有任务但未到轮询间隔
+        else:
+            time.sleep(30)     # 空闲降频：Render 免费层可休眠，不耗额度
 
 
 def _dl_loop(st):
