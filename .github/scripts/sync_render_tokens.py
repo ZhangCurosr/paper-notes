@@ -99,7 +99,7 @@ def main():
     api_key = os.environ.get("RENDER_API_KEY", "")
     if not api_key:
         print("缺少 RENDER_API_KEY"); sys.exit(1)
-    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    gh_token = os.environ.get("GH_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
     svc_id = os.environ.get("RENDER_SERVICE_ID", "")
     svc_name = os.environ.get("MINERU_SERVICE_NAME", "mineru-api")
 
