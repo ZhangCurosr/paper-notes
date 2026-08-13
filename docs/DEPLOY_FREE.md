@@ -25,8 +25,12 @@
 
 | Secret | 内容 | 用途 |
 |---|---|---|
-| `MINERU_TOKENS` | 逗号分隔的 mineru API token（可只放 10-50 个，账号级配额） | 调度池 token |
+| `CSV_PASSPHRASE` | `mineru_accounts.csv.gpg` 的解密口令（AES256 对称加密） | workflow 解密后**全量加载 CSV 中所有 token**（当前 255+，持续扩充自动生效） |
 | `GH_TOKEN` | 带 `repo` 权限的 Personal Access Token | 创建/推送产物仓库 |
+
+> **凭据管理**：`mineru_accounts.csv`（含 259 个账号的邮箱/手机/密码/api_key）**不入库**，
+> 加密为 `mineru_accounts.csv.gpg` 入库（`gpg --symmetric --cipher-algo AES256`）。
+> 扩充账号后重新加密上传即可，云端自动用全量 token，无需再改 secret。
 
 ### 2. 工作流文件（已提供 `.github/workflows/mineru_batch.yml`）
 
@@ -62,6 +66,14 @@ GitHub Actions cron ──→ fetch arXiv → 批量解析（token 池）
 ```
 
 ## 二、Render 常驻 API 方案（可选，如需对外提供 API）
+
+### ✅ 已部署（2026-08-13）
+
+- 服务地址：**https://mineru-api-sdwh.onrender.com**
+- 状态：服务在线（/health 200），256 token 全量加载（MINERU_TOKENS env），admin key 已配（MINERU_ADMIN_KEY env）
+- 心跳：`Render Heartbeat` workflow 每 10 分钟保活（RENDER_SERVICE_URL variable 已设）
+- 使用：见下方 curl 示例；**客户端需用脚本 UA + 自动重试**（Render 前置 Cloudflare Bot Fight 会随机拦截非浏览器流量，`scripts/mineru_api_client.py` 已内置）
+- 已知限制：MinerU v4 通道每日 5000 任务配额（按日重置）；flash 免 token 通道偶发服务端不可用（回落 v4 兜底）
 
 ### 部署资产（已就绪）
 
