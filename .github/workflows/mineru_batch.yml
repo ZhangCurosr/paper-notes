@@ -96,15 +96,6 @@ jobs:
             --venue ${{ matrix.venue }} \
             --max ${{ matrix.max }} \
             --out logs/conf_${{ matrix.venue }}.json
-      - name: Map prefix (category → repo suffix)
-        id: map
-        run: |
-          case "${{ matrix.category }}" in
-            cs.CL) echo "prefix=arxiv-cl" >> $GITHUB_OUTPUT ;;
-            cs.AI) echo "prefix=arxiv-ai" >> $GITHUB_OUTPUT ;;
-            cs.LG) echo "prefix=arxiv-lg" >> $GITHUB_OUTPUT ;;
-            cs.CV) echo "prefix=arxiv-cv" >> $GITHUB_OUTPUT ;;
-          esac
       - name: Map prefix (venue → repo suffix)
         id: map
         run: |
