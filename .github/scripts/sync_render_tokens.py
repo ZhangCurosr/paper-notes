@@ -82,14 +82,17 @@ def get_fingerprint(gh_token):
 def set_fingerprint(gh_token, value):
     """写/更新 repo variable 指纹"""
     if not gh_token or not REPO:
+        print("  [warn] 无 GITHUB_TOKEN/REPO，指纹未写入")
         return
     st, body = api(GH_API, "GET", f"/repos/{REPO}/actions/variables/{VAR_NAME}", gh_token)
     if st == 200 and isinstance(body, dict):
-        api(GH_API, "PATCH", f"/repos/{REPO}/actions/variables/{VAR_NAME}",
-            gh_token, {"value": value})
+        st2, body2 = api(GH_API, "PATCH", f"/repos/{REPO}/actions/variables/{VAR_NAME}",
+                         gh_token, {"value": value})
+        print(f"  指纹 PATCH: HTTP {st2}")
     else:
-        api(GH_API, "POST", f"/repos/{REPO}/actions/variables",
-            gh_token, {"name": VAR_NAME, "value": value})
+        st2, body2 = api(GH_API, "POST", f"/repos/{REPO}/actions/variables",
+                         gh_token, {"name": VAR_NAME, "value": value})
+        print(f"  指纹 POST: HTTP {st2} {str(body2)[:100]}")
 
 
 def main():
