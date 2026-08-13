@@ -35,6 +35,15 @@ jobs:
             --days ${{ matrix.days }} \
             --max ${{ matrix.max }} \
             --out logs/batch_${{ matrix.category }}.json
+      - name: Map prefix (category → repo suffix)
+        id: map
+        run: |
+          case "${{ matrix.category }}" in
+            cs.CL) echo "prefix=arxiv-cl" >> $GITHUB_OUTPUT ;;
+            cs.AI) echo "prefix=arxiv-ai" >> $GITHUB_OUTPUT ;;
+            cs.LG) echo "prefix=arxiv-lg" >> $GITHUB_OUTPUT ;;
+            cs.CV) echo "prefix=arxiv-cv" >> $GITHUB_OUTPUT ;;
+          esac
       - name: Batch parse via token pool
         run: |
           python scripts/mineru_api_pool.py \
@@ -47,7 +56,7 @@ jobs:
         run: |
           python scripts/github_sync.py \
             --dir output/${{ matrix.category }} \
-            --prefix "zhangcursor-papers-${{ matrix.category }}" \
+            --prefix "zhangcursor-papers-${{ steps.map.outputs.prefix }}" \
             --gh-token "${{ secrets.GH_TOKEN }}" \
             --index-repo "zhangcursor-index" \
             --index-out "logs/index_${{ matrix.category }}.json" \
@@ -87,6 +96,25 @@ jobs:
             --venue ${{ matrix.venue }} \
             --max ${{ matrix.max }} \
             --out logs/conf_${{ matrix.venue }}.json
+      - name: Map prefix (category → repo suffix)
+        id: map
+        run: |
+          case "${{ matrix.category }}" in
+            cs.CL) echo "prefix=arxiv-cl" >> $GITHUB_OUTPUT ;;
+            cs.AI) echo "prefix=arxiv-ai" >> $GITHUB_OUTPUT ;;
+            cs.LG) echo "prefix=arxiv-lg" >> $GITHUB_OUTPUT ;;
+            cs.CV) echo "prefix=arxiv-cv" >> $GITHUB_OUTPUT ;;
+          esac
+      - name: Map prefix (venue → repo suffix)
+        id: map
+        run: |
+          case "${{ matrix.venue }}" in
+            acl2024) echo "prefix=acl-2024" >> $GITHUB_OUTPUT ;;
+            emnlp2024) echo "prefix=emnlp-2024" >> $GITHUB_OUTPUT ;;
+            naacl2024) echo "prefix=naacl-2024" >> $GITHUB_OUTPUT ;;
+            cvpr2024) echo "prefix=cvpr-2024" >> $GITHUB_OUTPUT ;;
+            cvpr2023) echo "prefix=cvpr-2023" >> $GITHUB_OUTPUT ;;
+          esac
       - name: Batch parse via token pool
         run: |
           python scripts/mineru_api_pool.py \
@@ -99,7 +127,7 @@ jobs:
         run: |
           python scripts/github_sync.py \
             --dir output/${{ matrix.venue }} \
-            --prefix "zhangcursor-papers-${{ matrix.venue }}" \
+            --prefix "zhangcursor-papers-${{ steps.map.outputs.prefix }}" \
             --gh-token "${{ secrets.GH_TOKEN }}" \
             --index-repo "zhangcursor-index" \
             --index-out "logs/index_${{ matrix.venue }}.json" \
