@@ -168,14 +168,18 @@ class ServerState:
         self.opts = opts          # 解析参数
         self.flash_window = deque()  # flash 通道滑动窗口（IP 限频）
         self.dl_pool = ThreadPoolExecutor(max_workers=opts.download_workers)
+        self.running = True
+        self.started_at = time.time()
+        self.stop_event = threading.Event()   # ★ 后台线程停止信号（健康检查等）
+        self.dl_futures = {}      # task_id -> future
         self.tokens = mpool.load_tokens(opts)
         self.pool = mpool.TokenPool(self.tokens, opts.rate,
                                     strategy=getattr(opts, "strategy", "rr"),
                                     ban_threshold=getattr(opts, "ban_threshold", 5),
                                     health_interval=getattr(opts, "health_interval", 300))
-        self.running = True
-        self.started_at = time.time()
-        self.dl_futures = {}      # task_id -> future
+        mpool.set_event_log(os.path.join(self.data_dir, "events.jsonl"))   # ★ 结构化事件日志
+        self.pool.start_preflight()          # ★ 启动预热探测：无效 key 立即禁用
+        self.pool.start_health_check(self.stop_event)   # ★ 熔断 token 定期测活自动恢复
         # ★ 全局细粒度统计
         self.stats = {"tasks_total": 0, "by_status": Counter(),
                       "by_channel": Counter(), "by_model": Counter(),
@@ -624,6 +628,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._route_key_delete(path)
             elif path == "/v1/stats":
                 self._route_stats()
+            elif path == "/v1/metrics":
+                self._route_metrics()
             elif path == "/v1/stats/tokens":
                 self._route_stats_tokens()
             elif path == "/v1/stats/trends":
@@ -1006,6 +1012,54 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(0, {"deleted": target})
 
     # ── /v1/stats（admin）──
+    # ── /v1/metrics（admin，Prometheus 文本格式）──
+    def _route_metrics(self):
+        key, msg = self._auth(need_admin=True)
+        if not key:
+            return self._send_json(401, msg, 401)
+        ps = self.st.pool.stats()
+        lines = [
+            "# HELP mineru_tokens token 池总数", "# TYPE mineru_tokens gauge",
+            f"mineru_tokens {ps['tokens']}",
+            "# HELP mineru_ok 提交成功数", "# TYPE mineru_ok counter",
+            f"mineru_ok {ps['ok']}",
+            "# HELP mineru_err 提交失败数", "# TYPE mineru_err counter",
+            f"mineru_err {ps['err']}",
+            "# HELP mineru_rate_limited 429 次数", "# TYPE mineru_rate_limited counter",
+            f"mineru_rate_limited {ps['rate_limited']}",
+            "# HELP mineru_suspended 配额暂停次数", "# TYPE mineru_suspended counter",
+            f"mineru_suspended {ps['suspended']}",
+            "# HELP mineru_banned_now 当前熔断数", "# TYPE mineru_banned_now gauge",
+            f"mineru_banned_now {ps['banned_now']}",
+            "# HELP mineru_auth_failed 无效 key 数", "# TYPE mineru_auth_failed gauge",
+            f"mineru_auth_failed {ps['auth_failed']}",
+            "# HELP mineru_parse_ok 解析成功数", "# TYPE mineru_parse_ok counter",
+            f"mineru_parse_ok {ps['parse_ok']}",
+            "# HELP mineru_parse_fail 解析失败数", "# TYPE mineru_parse_fail counter",
+            f"mineru_parse_fail {ps['parse_fail']}",
+            "# HELP mineru_pages_parsed 累计解析页数", "# TYPE mineru_pages_parsed counter",
+            f"mineru_pages_parsed {ps['pages_parsed']}",
+            "# HELP mineru_bytes_uploaded 累计上传字节", "# TYPE mineru_bytes_uploaded counter",
+            f"mineru_bytes_uploaded {ps['bytes_uploaded']}",
+            "# HELP mineru_avg_success_rate 池平均成功率", "# TYPE mineru_avg_success_rate gauge",
+            f"mineru_avg_success_rate {ps['avg_success_rate']}",
+            "# HELP mineru_latency_p99 提交延迟 p99(ms)", "# TYPE mineru_latency_p99 gauge",
+            f"mineru_latency_p99 {ps.get('latency_ms', {}).get('p99') or 0}",
+            "# HELP mineru_api_requests 累计 API 请求数", "# TYPE mineru_api_requests counter",
+            f"mineru_api_requests {self.st.stats['api_requests']}",
+            "# HELP mineru_tasks_total 累计任务数", "# TYPE mineru_tasks_total counter",
+            f"mineru_tasks_total {self.st.stats['tasks_total']}",
+        ]
+        body = "\n".join(lines) + "\n"
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Content-Length", str(len(body.encode())))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception:
+            pass
+
     def _route_stats(self):
         key, msg = self._auth(need_admin=True)
         if not key:
