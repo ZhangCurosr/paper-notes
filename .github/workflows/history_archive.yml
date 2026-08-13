@@ -49,7 +49,8 @@ jobs:
                  'ok': tk.get('ok', 0), 'err': tk.get('err', 0),
                  'tasks_done': d['stats'].get('tasks_total', 0),
                  'err_dist': tk.get('err_dist', {}),
-                 'files_left': q.get('files_left')}
+                 'files_left': q.get('files_left'),
+                 'latency': tk.get('latency_ms') or {}}
           path = 'data/history/' + now.strftime('%Y-%m-%d') + '.jsonl'
           os.makedirs('data/history', exist_ok=True)
           keep = []
