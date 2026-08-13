@@ -58,7 +58,6 @@ jobs:
             --dir output/${{ matrix.category }} \
             --prefix "zhangcursor-papers-${{ steps.map.outputs.prefix }}" \
             --gh-token "${{ secrets.GH_TOKEN }}" \
-            --index-repo "zhangcursor-index" \
             --index-out "logs/index_${{ matrix.category }}.json" \
             --max-bytes 500000000
         env:
@@ -120,7 +119,6 @@ jobs:
             --dir output/${{ matrix.venue }} \
             --prefix "zhangcursor-papers-${{ steps.map.outputs.prefix }}" \
             --gh-token "${{ secrets.GH_TOKEN }}" \
-            --index-repo "zhangcursor-index" \
             --index-out "logs/index_${{ matrix.venue }}.json" \
             --max-bytes 500000000
         env:
