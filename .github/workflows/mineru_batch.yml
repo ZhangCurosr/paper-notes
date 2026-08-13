@@ -47,9 +47,9 @@ jobs:
         run: |
           python scripts/github_sync.py \
             --dir output/${{ matrix.category }} \
-            --prefix "mineru-${{ matrix.category }}" \
+            --prefix "zhangcursor-papers-${{ matrix.category }}" \
             --gh-token "${{ secrets.GH_TOKEN }}" \
-            --index-repo "mineru-index" \
+            --index-repo "zhangcursor-index" \
             --index-out "logs/index_${{ matrix.category }}.json" \
             --max-bytes 500000000
         env:
@@ -99,9 +99,9 @@ jobs:
         run: |
           python scripts/github_sync.py \
             --dir output/${{ matrix.venue }} \
-            --prefix "mineru-${{ matrix.venue }}" \
+            --prefix "zhangcursor-papers-${{ matrix.venue }}" \
             --gh-token "${{ secrets.GH_TOKEN }}" \
-            --index-repo "mineru-index" \
+            --index-repo "zhangcursor-index" \
             --index-out "logs/index_${{ matrix.venue }}.json" \
             --max-bytes 500000000
         env:
@@ -137,7 +137,7 @@ jobs:
           ls merged/ | head
           python scripts/hub_update.py \
             --index-dir merged \
-            --hub-repo paper-hub \
+            --hub-repo zhangcursor-hub \
             --gh-token "${{ secrets.GH_TOKEN }}"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
