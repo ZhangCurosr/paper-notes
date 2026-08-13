@@ -4,6 +4,7 @@ name: History Archive
 # Dashboard「历史」页签通过 GET /v1/history 读取这些文件（服务端从 raw.githubusercontent 拉取聚合）
 #
 # 依赖：secrets.MINERU_ADMIN_KEY（云端 API 管理员 key，gh secret set MINERU_ADMIN_KEY）
+# 注意：本文件 run 块避免使用 <<'EOF'（YAML merge key 语法陷阱），统一 python -c 双引号
 
 on:
   schedule:
@@ -22,48 +23,49 @@ jobs:
       - name: Fetch and append stats
         env:
           MINERU_ADMIN_KEY: ${{ secrets.MINERU_ADMIN_KEY }}
-        run: python - <<'EOF'
-          import json, os, urllib.request, datetime, time, sys
-          key = os.environ["MINERU_ADMIN_KEY"]
+        run: |
+          python -c "
+          import json, os, urllib.request, datetime, time
+          key = os.environ['MINERU_ADMIN_KEY']
           def fetch(path, tries=6):
               last = None
               for i in range(tries):
                   try:
-                      req = urllib.request.Request("https://mineru-api-sdwh.onrender.com" + path,
-                          headers={"Authorization": "Bearer " + key,
-                                   "User-Agent": "python-requests/2.32.3 (mineru-api-client)"})
+                      req = urllib.request.Request('https://mineru-api-sdwh.onrender.com' + path,
+                          headers={'Authorization': 'Bearer ' + key,
+                                   'User-Agent': 'python-requests/2.32.3 (mineru-api-client)'})
                       return json.loads(urllib.request.urlopen(req, timeout=60).read())
                   except Exception as e:
                       last = e
                       if i < tries - 1:
                           time.sleep(3)
               raise last
-          d = fetch("/v1/stats")["data"]
-          tk = d["tokens"]; q = tk["daily"]
+          d = fetch('/v1/stats')['data']
+          tk = d['tokens']; q = tk['daily']
           now = datetime.datetime.now(datetime.timezone.utc)
-          hour = now.strftime("%m-%d %H")
-          row = {"ts": int(now.timestamp()), "hour": hour,
-                 "submits": q.get("submits", 0), "pages": q.get("pages", 0),
-                 "ok": tk.get("ok", 0), "err": tk.get("err", 0),
-                 "tasks_done": d["stats"].get("tasks_total", 0),
-                 "err_dist": tk.get("err_dist", {}),
-                 "files_left": q.get("files_left")}
-          path = f"data/history/{now.strftime('%Y-%m-%d')}.jsonl"
-          os.makedirs("data/history", exist_ok=True)
+          hour = now.strftime('%m-%d %H')
+          row = {'ts': int(now.timestamp()), 'hour': hour,
+                 'submits': q.get('submits', 0), 'pages': q.get('pages', 0),
+                 'ok': tk.get('ok', 0), 'err': tk.get('err', 0),
+                 'tasks_done': d['stats'].get('tasks_total', 0),
+                 'err_dist': tk.get('err_dist', {}),
+                 'files_left': q.get('files_left')}
+          path = 'data/history/' + now.strftime('%Y-%m-%d') + '.jsonl'
+          os.makedirs('data/history', exist_ok=True)
           keep = []
           if os.path.exists(path):
-              for line in open(path, encoding="utf-8"):
+              for line in open(path, encoding='utf-8'):
                   line = line.strip()
                   if line:
                       try:
-                          if json.loads(line).get("hour") != hour:
+                          if json.loads(line).get('hour') != hour:
                               keep.append(line)
                       except Exception:
                           pass
           keep.append(json.dumps(row, ensure_ascii=False))
-          open(path, "w", encoding="utf-8").write("\n".join(keep) + "\n")
-          print(f"history: {path} · {len(keep)} 行（含 {hour} 整点快照）")
-          EOF
+          open(path, 'w', encoding='utf-8').write('\\n'.join(keep) + '\\n')
+          print('history: ' + path + ' rows=' + str(len(keep)))
+          "
 
       - name: Commit and push
         run: |
