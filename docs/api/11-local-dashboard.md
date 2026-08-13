@@ -1,47 +1,56 @@
 # 11 本地监控 Dashboard
 
-**功能**：在本地电脑浏览器查看云端任务情况（零依赖单文件工具，代理拉取云端数据）。
+**功能**：在本地电脑浏览器查看云端任务情况（零依赖单文件工具，本地代理拉取云端数据，自动打开浏览器）。
 
-**工具**：[local_dashboard.py](../../scripts/local_dashboard.py)
+**工具**：[local_dashboard.py](../../scripts/local_dashboard.py) + [start_dashboard.bat](../../start_dashboard.bat)（Windows 双击启动）
 
-## 启动
+## 一键启动（推荐）
+
+```bash
+# Windows：双击 start_dashboard.bat
+# 首次运行输入 API key（可选保存到 %USERPROFILE%\.mineru_dashboard\config.json，之后免输入）
+# 自动打开浏览器 http://127.0.0.1:8901
+```
+
+或命令行：
 
 ```bash
 set MINERU_API_KEY=sk-admin-xxx        # admin（看全局）或 user（看自己）key
 python scripts/local_dashboard.py
-# → 浏览器打开 http://127.0.0.1:8901
 ```
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `--key` | 环境变量 `MINERU_API_KEY` / `MINERU_ADMIN_KEY` | API key |
+| `--key` | 环境变量 `MINERU_API_KEY`/`MINERU_ADMIN_KEY` | API key（优先级：命令行 > 环境变量 > 配置文件） |
+| `--config` | `%USERPROFILE%\.mineru_dashboard\config.json` | 配置文件（key/base），首次运行交互式创建 |
 | `--base` | `https://mineru-api-sdwh.onrender.com` | 云端地址 |
 | `--port` | 8901 | 本地端口 |
-| `--refresh` | 15 | 云端数据缓存秒数 |
-| `--host` | 127.0.0.1 | 监听地址（默认仅本机，勿改） |
+| `--refresh` | 15 | 缓存/自动刷新秒数 |
+| `--host` | 127.0.0.1 | 监听地址（默认仅本机） |
 
-## 页面内容
+## 页面内容（v2）
 
 | 区域 | 内容 |
 | --- | --- |
-| 顶部状态条 | 云端在线/离线、运行时长、调度策略、token 数、服务版本 |
-| KPI 卡片 | 提交成功/失败、成功率、解析页数、延迟 p99、熔断中、配额暂停、429 冷却、今日剩余文件/优先页、flash 任务、API 请求数 |
-| 24h 趋势图 | 任务量折线（canvas 手绘，无外部资源） |
-| Token 池表 | 状态（active/熔断/暂停/冷却）、成功率、ok/err/429、延迟、preflight、今日剩余；点表头排序 |
-| 错误分布 | err_dist 错误码分布 + fail_reasons 失败原因 Top10 |
-| 最近任务 | 我的 key 任务列表（状态徽章、通道、来源、错误），按钮筛选 pending/submitted/done/failed |
-
-自动刷新 15s（与缓存同步），也可手动刷新。
+| 顶部 | 在线状态（时长/策略/token 数/版本）、自动刷新倒计时、主题切换、暂停自动刷新、手动刷新 |
+| KPI 卡片（12 个） | 提交成功/失败、成功率、解析页数、延迟 p99、熔断/暂停/冷却、今日提交、剩余文件、flash 任务、API 请求数 |
+| 配额进度条 ×2 | 今日文件（5000）与优先页（1000）用量 + 剩余，超 70%/85% 变色预警 |
+| 24h 趋势图 | 折线 + 渐变面积 + 网格 + **悬停提示**（canvas 手绘） |
+| 错误分布 | err_dist 横向条形图 + 失败原因 Top10 |
+| Token 池表 | **搜索过滤**、表头排序（▲▼）、成功率进度条、状态徽章、preflight、今日剩余/提交、**导出 CSV** |
+| 最近任务 | 状态分段按钮（带计数）、**来源搜索**、相对时间/耗时、**点击行弹窗看详情**（进度/错误/batch/时间线）、**导出 CSV** |
+| 其他 | 暗/亮主题（localStorage 记忆）、刷新加载动画、toast 提示 |
 
 ## 安全设计
 
 - 仅监听 `127.0.0.1`，不暴露内网
-- key 只从命令行/环境变量读取，**不落盘、不出现在页面**
-- 浏览器不直连云端（云端 CORS 默认关闭）——所有请求经本地代理转发，天然绕过且无跨域风险
+- key 只从命令行/环境变量/用户目录配置文件读取（**不写入仓库、不出现在页面**）；配置文件在你确认后才创建
+- 浏览器不直连云端（云端 CORS 默认关闭）——所有请求经本地代理转发
 - 访问日志静默
 
 ## 实现要点
 
-- 纯标准库（http.server + urllib），无 pip 依赖
-- 云端请求带 5 次指数退避重试（Cloudflare 随机拦截兜底，与客户端库同策略）
-- 本地缓存 15s：重复刷新不打爆免费层
+- 纯标准库（http.server + urllib），零 pip 依赖；前端单页内嵌，无外部 CDN
+- 云端请求带 5 次指数退避重试（Cloudflare 随机拦截兜底）
+- 本地缓存 `--refresh` 秒：重复刷新不打爆免费层；`/api/refresh` 可强制清缓存
+- 新增代理端点：`/api/config`、`/api/task/{id}`（任务详情）、`/api/tasks`、`/api/tokens`、`/api/errbox`、`/api/overview`
