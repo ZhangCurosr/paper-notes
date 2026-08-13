@@ -63,10 +63,50 @@ GitHub Actions cron ──→ fetch arXiv → 批量解析（token 池）
 
 ## 二、Render 常驻 API 方案（可选，如需对外提供 API）
 
-1. 用仓库内 `deploy/Dockerfile` + `deploy/render.yaml`
-2. Render 免费 Web Service：15min 无流量休眠，冷启动 ~50s
-3. **保活**：上面 Actions workflow 加一个 job 每 10 分钟 `curl https://{svc}.onrender.com/health`（免费，顺带当心跳）
-4. 状态/产物仍由 Actions 定期 push 到 GitHub
+### 部署资产（已就绪）
+
+| 文件 | 作用 |
+|---|---|
+| `deploy/Dockerfile` | python:3.11-slim 镜像，仅装 requests，跑 `mineru_api_server.py` |
+| `render.yaml`（仓库根目录） | Render Blueprint 配置（免费 Web Service + 健康检查 /health） |
+| `.github/workflows/heartbeat.yml` | 每 10 分钟 curl /health 保活（防 15min 休眠冷启动） |
+| `scripts/mineru_api_server.py` v2.0 | token 池 + flash 免 token 双通道 HTTP 服务 |
+
+### 部署步骤（约 10 分钟）
+
+1. 注册 Render：https://render.com → Sign up（GitHub 账号登录最快，免费）
+2. Dashboard → **New → Blueprint** → 连接 GitHub → 选择 `ZhangCurosr/paper-notes`
+   （public 仓库，自动读到根目录 render.yaml，无需手动选服务类型）
+3. 在 Blueprint 预览页（或 Service → Environment）设置两个 Secret：
+   - `MINERU_TOKENS`：逗号分隔的 MinerU API token（可放 10-60 个，建议 30+）
+   - `MINERU_ADMIN_KEY`：自定义管理员 key（如 `sk-admin-<32位随机>`，**重启后仍有效**）
+4. **Apply** → 自动构建（Docker 镜像拉取约 1-2 分钟）→ 部署完成
+5. 验证：浏览器打开 `https://{服务名}.onrender.com/health`（应返回 `mineru-api-server 2.0`）
+6. （可选）仓库 Settings → Variables → 新建 `RENDER_SERVICE_URL` = 服务地址
+   → heartbeat workflow 自动保活（不设也不影响，默认 URL 可改 workflow）
+
+### 使用 API
+
+```bash
+# 创建用户 key（admin）
+curl -X POST https://{svc}.onrender.com/v1/keys -H "Authorization: Bearer $ADMIN_KEY" \
+     -d '{"name":"alice"}'
+# 提交解析任务（用户 key）
+curl -X POST https://{svc}.onrender.com/v1/tasks -H "Authorization: Bearer $USER_KEY" \
+     -d '{"urls":["https://arxiv.org/pdf/2608.00001"]}'
+# 查询状态 / 取结果
+curl https://{svc}.onrender.com/v1/tasks/{id} -H "Authorization: Bearer $USER_KEY"
+curl https://{svc}.onrender.com/v1/tasks/{id}/result -H "Authorization: Bearer $USER_KEY"
+```
+
+### 注意事项
+
+- **免费层磁盘非持久**：重启后 `state.json`/产物丢失，任务记录清空；因此：
+  - admin key 必须用 `MINERU_ADMIN_KEY` 环境变量注入（已支持）
+  - 重要产物仍以 GitHub Actions 同步到仓库为准，API 服务仅作临时取用
+- **免费层限流**：750 小时/月 ≈ 31 天（心跳 10min 一次约 48h/月，剩余 ~700h 够用）
+- **冷启动**：休眠后首个请求 ~50s 才响应，心跳保活可避免（建议开启）
+- **出站网络**：Render 免费层通常可直连 mineru.net / arxiv.org（若遇网络限制，用 Actions 主通道，API 仅作内部取用）
 
 ## 三、成本核算（全免费）
 
