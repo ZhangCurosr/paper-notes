@@ -1,0 +1,49 @@
+# 一次性合并任务：把 zhangcursor-papers-{group}-00N 合并进 -001 并删除多余仓库
+# 手动触发：gh workflow run "Merge paper repos" --repo ZhangCurosr/paper-notes
+name: Merge paper repos
+
+on:
+  workflow_dispatch:
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Merge repos
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          OWNER: ZhangCurosr
+        run: |
+          set -e
+          export PATH="$PATH:/home/runner/.local/bin"
+          cd /tmp
+          for group in cs.CL cs.AI cs.LG cs.CV acl2024 emnlp2024 naacl2024 cvpr2023 cvpr2024; do
+            base="zhangcursor-papers-${group}"
+            echo "===== 合并 ${base} ====="
+            git clone --quiet "https://oauth2:${GH_TOKEN}@github.com/${OWNER}/${base}-001.git" "$base"
+            cd "$base"
+            for n in 002 003 004 005; do
+              repo="${base}-${n}"
+              if gh repo view "${OWNER}/${repo}" --json name >/dev/null 2>&1; then
+                echo "  merge ${repo}"
+                git fetch --quiet "https://oauth2:${GH_TOKEN}@github.com/${OWNER}/${repo}.git" main
+                git merge --allow-unrelated-histories --no-edit FETCH_HEAD >/dev/null 2>&1 || true
+              fi
+            done
+            # 删除旧结构文件（content_list / layout / model json）
+            git rm -rq --ignore-unmatch $(git ls-files | grep -E '(_content_list(_v2)?\.json|_model\.json|layout\.json)$' || true) 2>/dev/null || true
+            git -c user.email="mineru-bot@users.noreply.github.com" -c user.name="mineru-bot" commit -q -m "merge all ${group} repos + prune old jsons" --allow-empty
+            git push --quiet "https://oauth2:${GH_TOKEN}@github.com/${OWNER}/${base}-001.git" main
+            echo "  ✅ ${base}-001 合并完成"
+            # 删除多余仓库
+            for n in 002 003 004 005; do
+              repo="${base}-${n}"
+              if gh repo view "${OWNER}/${repo}" --json name >/dev/null 2>&1; then
+                gh repo delete "${OWNER}/${repo}" --yes
+                echo "  🗑 ${repo} 已删除"
+              fi
+            done
+            cd /tmp
+          done
+          echo "全部合并完成"
