@@ -55,8 +55,10 @@ def main():
         if not os.path.exists(os.path.join(dst, ".git")):
             run(["git", "clone", f"https://x-access-token:{GH_TOKEN}@github.com/{repo}.git", dst])
         else:
-            run(["git", "-C", dst, "fetch", "origin"], cwd=None)
+            run(["git", "-C", dst, "fetch", "origin"])
             run(["git", "-C", dst, "reset", "--hard", "origin/main"])
+        run(["git", "-C", dst, "config", "user.email", "ctf@4router.net"])
+        run(["git", "-C", dst, "config", "user.name", "paper-notes-bot"])
         # 扫描所有论文目录（{date}/{title}_{batch8}）
         by_source = {}
         for date_dir in sorted(os.listdir(dst)):
