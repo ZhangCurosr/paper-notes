@@ -1054,7 +1054,9 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="监听地址（0.0.0.0 对外）")
     ap.add_argument("--port", type=int, default=8900, help="监听端口")
     ap.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="服务数据目录（keys/state/uploads）")
-    ap.add_argument("--admin-key", help="管理员 key（缺省自动生成并保存）")
+    ap.add_argument("--admin-key", default=os.environ.get("MINERU_ADMIN_KEY"),
+                    help="管理员 key（缺省自动生成并保存；可设 MINERU_ADMIN_KEY 环境变量）")
+    ap.add_argument("--tokens", help="逗号分隔 token（缺省读 MINERU_TOKENS 环境变量 / mineru_accounts.csv）")
     ap.add_argument("--key-rate", type=int, default=60, help="每用户 key 每分钟请求上限")
     ap.add_argument("--out-dir", default=mpool.DEFAULT_OUT, help="产物输出目录")
     # token 池参数
@@ -1074,6 +1076,11 @@ def main():
                     help="flash 通道每分钟提交上限（IP 级限频，保守值）")
     args = ap.parse_args()
     args.flash = not args.no_flash
+    # server 的 --tokens 是逗号分隔列表（与 pool CLI 的文件路径语义区分）
+    if args.tokens:
+        tl = [t.strip() for t in args.tokens.split(",") if t.strip()]
+        if tl:
+            os.environ["MINERU_TOKENS"] = ",".join(tl)
 
     os.makedirs(args.out_dir, exist_ok=True)
     faulthandler.dump_traceback_later(60, repeat=True)
