@@ -8,3 +8,4 @@
 {"ts": 1787308749, "hour": "08-21 10", "submits": 0, "pages": 0, "ok": 0, "err": 0, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
 {"ts": 1787312061, "hour": "08-21 11", "submits": 0, "pages": 0, "ok": 0, "err": 0, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
 {"ts": 1787320394, "hour": "08-21 13", "submits": 1, "pages": 0, "ok": 1, "err": 4, "tasks_done": 5, "err_dist": {"上传失败": 4}, "files_left": 4999, "latency": {"p50": 295, "p90": 295, "p99": 295}}
+{"ts": 1787323542, "hour": "08-21 14", "submits": 0, "pages": 0, "ok": 0, "err": 0, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
