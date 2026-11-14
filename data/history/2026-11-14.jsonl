@@ -1,1 +1,2 @@
 {"ts": 1794625326, "hour": "11-14 03", "submits": 0, "pages": 0, "ok": 0, "err": 75, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
+{"ts": 1794650733, "hour": "11-14 10", "submits": 0, "pages": 0, "ok": 0, "err": 74, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
