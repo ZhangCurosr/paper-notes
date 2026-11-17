@@ -1,2 +1,3 @@
 {"ts": 1794886860, "hour": "11-17 03", "submits": 0, "pages": 0, "ok": 0, "err": 76, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
 {"ts": 1794920752, "hour": "11-17 13", "submits": 0, "pages": 0, "ok": 0, "err": 76, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
+{"ts": 1794951782, "hour": "11-17 21", "submits": 0, "pages": 0, "ok": 0, "err": 58, "tasks_done": 0, "err_dist": {}, "files_left": 5000, "latency": {"p50": null, "p90": null, "p99": null}}
